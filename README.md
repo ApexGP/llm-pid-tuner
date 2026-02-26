@@ -2,6 +2,8 @@
 
 [![Star History Chart](https://api.star-history.com/svg?repos=KINGSTON-115/llm-pid-tuner&type=Date)](https://star-history.com/#KINGSTON-115/llm-pid-tuner)
 
+> 📺 [B站教程视频](https://b23.tv/WVUuIFb) - 详细视频教程手把手教你使用
+
 一个纯 CLI 的 PID 自动调参系统，支持本地仿真和真实硬件两种模式。
 
 ## 系统架构
