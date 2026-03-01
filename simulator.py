@@ -29,6 +29,7 @@ API_BASE_URL = os.getenv("LLM_API_BASE_URL", "http://115.190.127.51:19882/v1")  
 # API_BASE_URL = "https://api.openai.com/v1"
 API_KEY = os.getenv("LLM_API_KEY", "sk-cyWHsMGgfUWm4FGxBWj8wxYKXfjMTPzT7T0rKPd8X2ac3XPS")
 MODEL_NAME = os.getenv("LLM_MODEL_NAME", "MiniMax-M2.5")
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")  # [openai | anthropic]
 
 # ============================================================================
 # 配置
@@ -227,7 +228,7 @@ class HeatingSimulator:
 # ============================================================================
 
 def call_llm(data_text: str, rounds: int = 1, metrics: dict = None) -> dict:
-    """调用 MiniMax M2.5 API 分析 PID 数据"""
+    """调用 LLM API 分析 PID 数据 (支持 OpenAI 和 Anthropic)"""
     
     # 检查是否需要调用系统辨识
     use_system_id = (rounds <= 3 and metrics.get('avg_error', 0) > 50)
@@ -258,7 +259,8 @@ def call_llm(data_text: str, rounds: int = 1, metrics: dict = None) -> dict:
         except Exception as e:
             print(f"[系统辨识] 错误: {e}")
     
-    prompt = f"""你是一个 PID 控制算法专家。请分析以下温度控制系统数据，判断当前 PID 参数表现并给出优化建议。
+    # 构建 SYSTEM_PROMPT (复用 tuner.py 的逻辑)
+    SYSTEM_PROMPT = """你是一个 PID 控制算法专家。请分析以下温度控制系统数据，判断当前 PID 参数表现并给出优化建议。
 
 ## 重要约束
 - **禁止超调**：严禁让温度超过目标值，一旦发现超调必须立即减小 Kp 和增大 Kd
@@ -270,116 +272,97 @@ def call_llm(data_text: str, rounds: int = 1, metrics: dict = None) -> dict:
 - 震荡剧烈 → 减小 Kp 或增大 Kd
 - 响应太慢 → 增大 Kp（可以大胆增加，如 +50%）
 - 稳态误差 → 增大 Ki（可以大胆增加，如 +50%）
-- 超调过大 → 大幅减小 Kp（至少减少 30%）和增大 Kd（至少增加 50%）
+- 超调过大 → 大幅减小 Kp（至少减少 30%）和增大 Kd（至少增加 50%）"""
 
-## 数据
-{data_text}
+    user_prompt = f"""{data_text}
 
 请直接返回 JSON 格式:
 {{"analysis": "简短分析原因", "p": 数值, "i": 数值, "d": 数值, "status": "TUNING"}}"""
 
-    print("\n[MiniMax] 调用 API 中...")
+    print(f"\n[{LLM_PROVIDER}] 调用 API 中...")
     
     try:
-        headers = {
-            "Authorization": f"Bearer {API_KEY}",
-            "Content-Type": "application/json"
-        }
+        # 识别提供商
+        provider = LLM_PROVIDER
+        if "anthropic" in API_BASE_URL.lower() or "claude" in MODEL_NAME.lower():
+            provider = "anthropic"
+
+        if provider == "openai":
+            headers = {
+                "Authorization": f"Bearer {API_KEY}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": MODEL_NAME,
+                "messages": [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt}
+                ],
+                "temperature": 0.3,
+                "max_tokens": 500
+            }
+            url = f"{API_BASE_URL}/chat/completions"
+        else: # anthropic
+            headers = {
+                "x-api-key": API_KEY,
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": MODEL_NAME,
+                "system": SYSTEM_PROMPT,
+                "messages": [
+                    {"role": "user", "content": user_prompt}
+                ],
+                "temperature": 0.3,
+                "max_tokens": 500
+            }
+            url = f"{API_BASE_URL}/messages"
         
-        payload = {
-            "model": MODEL_NAME,
-            "messages": [
-                {"role": "user", "content": prompt}
-            ],
-            "temperature": 0.3,
-            "max_tokens": 500
-        }
-        
-        resp = requests.post(
-            f"{API_BASE_URL}/chat/completions",
-            headers=headers,
-            json=payload,
-            timeout=60
-        )
+        resp = requests.post(url, headers=headers, json=payload, timeout=60)
         
         if resp.status_code != 200:
-            print(f"[错误] API 调用失败: {resp.status_code} - {resp.text[:200]}")
+            print(f"[错误] API 调用失败 ({provider}): {resp.status_code} - {resp.text[:200]}")
             return None
         
-        resp_data = resp.json()["choices"][0]["message"]
+        resp_data = resp.json()
+        if provider == "openai":
+            result_text = resp_data["choices"][0]["message"].get("content", "")
+            if not result_text:
+                result_text = resp_data["choices"][0]["message"].get("reasoning_content", "")
+        else:
+            result_text = resp_data["content"][0]["text"]
         
-        # MiniMax M2.5 可能使用 reasoning 模式，内容在 reasoning_content 中
-        result_text = resp_data.get("content", "")
-        if not result_text or result_text.strip() == "":
-            result_text = resp_data.get("reasoning_content", "")
-        
-        print(f"[MiniMax] 原始返回: {result_text[:200]}...")
+        print(f"[{provider}] 原始返回: {result_text[:200]}...")
         
         # 预处理：去掉 Markdown 代码块标记
         result_text = result_text.replace("```json", "").replace("```", "").strip()
         
-        # 尝试多种方式解析 JSON
+        # 解析 JSON (复用原有解析逻辑)
         import re
         
-        # 方法1: 尝试直接解析（如果返回的是纯JSON）
+        # 方法1: 尝试直接解析
         try:
             return json.loads(result_text)
         except json.JSONDecodeError:
             pass
         
         # 方法2: 提取 JSON 块（支持嵌套 - 找最外层的{}）
-        # 找到第一个 { 和最后一个 }
         start = result_text.find('{')
         end = result_text.rfind('}')
         if start != -1 and end != -1 and end > start:
             json_str = result_text[start:end+1]
             try:
                 parsed = json.loads(json_str)
-                # 检查是否有所需字段
                 if 'p' in parsed or 'i' in parsed:
                     return parsed
-            except json.JSONDecodeError as e:
-                print(f"[解析] JSON 块解析失败: {e}")
+            except json.JSONDecodeError:
+                pass
         
-        # 方法3: 尝试提取 key-value 对
+        # 方法3: 提取 key-value 对
         p_match = re.search(r'"p"\s*:\s*([0-9.]+)', result_text)
         i_match = re.search(r'"i"\s*:\s*([0-9.]+)', result_text)
         d_match = re.search(r'"d"\s*:\s*([0-9.]+)', result_text)
-        
-        if p_match and i_match and d_match:
-            analysis_match = re.search(r'"analysis"\s*:\s*"([^"]*)"', result_text)
-            status_match = re.search(r'"status"\s*:\s*"([^"]*)"', result_text)
-            
-            return {
-                "analysis": analysis_match.group(1) if analysis_match else "分析",
-                "p": float(p_match.group(1)),
-                "i": float(i_match.group(1)),
-                "d": float(d_match.group(1)),
-                "status": status_match.group(1) if status_match else "TUNING"
-            }
-        
-        # 方法4: 支持更宽松的格式 (p: 1.0 或 'p': 1.0)
-        p_match = re.search(r'["\']?p["\']?\s*:\s*([0-9.]+)', result_text)
-        i_match = re.search(r'["\']?i["\']?\s*:\s*([0-9.]+)', result_text)
-        d_match = re.search(r'["\']?d["\']?\s*:\s*([0-9.]+)', result_text)
-        
-        if p_match and i_match and d_match:
-            # 提取 analysis
-            analysis_match = re.search(r'[Aa]nalysis[:\s]+([^0-9"]+)', result_text)
-            status_match = re.search(r'[Ss]tatus[:\s]+["\']?(\w+)', result_text)
-            
-            return {
-                "analysis": analysis_match.group(1).strip() if analysis_match else "解析成功",
-                "p": float(p_match.group(1)),
-                "i": float(i_match.group(1)),
-                "d": float(d_match.group(1)),
-                "status": status_match.group(1) if status_match else "TUNING"
-            }
-        
-        # 方法5: 支持纯数字格式 "p 1.0" 或 "p=1.0"
-        p_match = re.search(r'[Pp]\s*[=:]\s*([0-9.]+)', result_text)
-        i_match = re.search(r'[Ii]\s*[=:]\s*([0-9.]+)', result_text)
-        d_match = re.search(r'[Dd]\s*[=:]\s*([0-9.]+)', result_text)
         
         if p_match and i_match and d_match:
             return {
@@ -387,17 +370,6 @@ def call_llm(data_text: str, rounds: int = 1, metrics: dict = None) -> dict:
                 "p": float(p_match.group(1)),
                 "i": float(i_match.group(1)),
                 "d": float(d_match.group(1)),
-                "status": "TUNING"
-            }
-        
-        # 方法6: 查找 Z-N 建议参数
-        zn_match = re.search(r'Z-N[建议建议:：]+\s*[Pp]ID[:\s]+.*?Kp=([0-9.]+).*?Ki=([0-9.]+).*?Kd=([0-9.]+)', result_text, re.DOTALL)
-        if zn_match:
-            return {
-                "analysis": "采用Z-N建议参数",
-                "p": float(zn_match.group(1)),
-                "i": float(zn_match.group(2)),
-                "d": float(zn_match.group(3)),
                 "status": "TUNING"
             }
         

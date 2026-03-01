@@ -57,6 +57,7 @@ export LLM_API_KEY="ollama"
 |----------|--------------|----------|
 | **Ollama** | `http://localhost:11434/v1` | 兼容 OpenAI 格式，推荐使用 `llama3` 或 `qwen2` |
 | **LM Studio** | `http://localhost:1234/v1` | 开启 Local Server 后即可使用 |
+| **Claude 原生** | `https://api.anthropic.com/v1` | 需设置 `LLM_PROVIDER="anthropic"`，并提供官方 API Key |
 | **昇腾 (Ascend)** | 需配合推理框架 | 如使用 `MindSpore Serving` 或 `vLLM` 部署在昇腾芯片上，提供其 OpenAI 兼容端点即可 |
 
 ### 3. 运行

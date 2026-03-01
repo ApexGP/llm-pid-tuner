@@ -44,10 +44,12 @@ BAUD_RATE = int(os.getenv("BAUD_RATE", "115200"))
 # 本地模型示例:
 #   Ollama:    API_BASE_URL="http://localhost:11434/v1" | MODEL_NAME="llama3" (或 qwen2, deepseek-v2 等)
 #   LM Studio: API_BASE_URL="http://localhost:1234/v1"  | MODEL_NAME="model-identifier"
+#   Claude 原生: API_BASE_URL="https://api.anthropic.com/v1" | MODEL_NAME="claude-3-5-sonnet-20240620"
 #   昇腾 Ascend: 如果使用昇腾推理框架 (如 MindSpore Serving), 请提供对应的 OpenAI 兼容端点
 API_KEY = os.getenv("LLM_API_KEY", "your-api-key-here")           # 替换为你的 API Key
 API_BASE_URL = os.getenv("LLM_API_BASE_URL", "https://api.openai.com/v1")  # 或其他兼容 API
 MODEL_NAME = os.getenv("LLM_MODEL_NAME", "gpt-4")                     # 使用的模型
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")                    # [openai | anthropic]
 
 # 调参配置
 BUFFER_SIZE = 25              # 数据缓冲大小 (平衡速度和准确性)
@@ -216,30 +218,36 @@ class LLMTuner:
     LLM 调参器
     负责调用 LLM API 并解析返回的 JSON
     """
-    def __init__(self, api_key: str, base_url: str, model: str):
+    def __init__(self, api_key: str, base_url: str, model: str, provider: str = "openai"):
         self.api_key = api_key
         self.base_url = base_url
         self.model = model
+        self.provider = provider
         
-        # 尝试导入 openai，如果失败则使用 requests
+        # 尝试根据 URL 或模型名自动识别 provider
+        if "anthropic" in base_url.lower() or "claude" in model.lower():
+            self.provider = "anthropic"
+
+        # 尝试导入相应的库
         try:
-            import openai
-            self.client = openai.OpenAI(api_key=api_key, base_url=base_url)
-            self.use_openai = True
+            if self.provider == "openai":
+                import openai
+                self.client = openai.OpenAI(api_key=api_key, base_url=base_url)
+                self.use_sdk = True
+            elif self.provider == "anthropic":
+                import anthropic
+                self.client = anthropic.Anthropic(api_key=api_key, base_url=base_url)
+                self.use_sdk = True
+            else:
+                self.use_sdk = False
         except ImportError:
             import requests
             self.requests = requests
-            self.use_openai = False
+            self.use_sdk = False
     
     def analyze_and_suggest(self, data_text: str) -> Optional[Dict[str, Any]]:
         """
         将数据发送给 LLM，获取调参建议
-        
-        Args:
-            data_text: 格式化后的数据文本
-            
-        Returns:
-            包含新 PID 参数的字典，或 None (如果失败)
         """
         user_prompt = f"""请分析以下 PID 控制系统数据，并给出优化建议：
 
@@ -248,46 +256,85 @@ class LLMTuner:
 请根据分析结果返回新的 PID 参数 (JSON 格式)。"""
 
         try:
-            if self.use_openai:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": user_prompt}
-                    ],
-                    temperature=0.3,
-                    max_tokens=500
-                )
-                result_text = response.choices[0].message.content
+            if self.use_sdk:
+                if self.provider == "openai":
+                    response = self.client.chat.completions.create(
+                        model=self.model,
+                        messages=[
+                            {"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "user", "content": user_prompt}
+                        ],
+                        temperature=0.3,
+                        max_tokens=500
+                    )
+                    result_text = response.choices[0].message.content
+                elif self.provider == "anthropic":
+                    # Anthropic 的消息格式略有不同，system 是顶层参数
+                    response = self.client.messages.create(
+                        model=self.model,
+                        system=SYSTEM_PROMPT,
+                        messages=[
+                            {"role": "user", "content": user_prompt}
+                        ],
+                        temperature=0.3,
+                        max_tokens=500
+                    )
+                    result_text = response.content[0].text
             else:
                 # 使用 requests 直接调用 API
-                headers = {
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json"
-                }
-                payload = {
-                    "model": self.model,
-                    "messages": [
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": user_prompt}
-                    ],
-                    "temperature": 0.3,
-                    "max_tokens": 500
-                }
-                resp = self.requests.post(
-                    f"{self.base_url}/chat/completions",
-                    headers=headers,
-                    json=payload,
-                    timeout=30
-                )
+                if self.provider == "openai":
+                    headers = {
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json"
+                    }
+                    payload = {
+                        "model": self.model,
+                        "messages": [
+                            {"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "user", "content": user_prompt}
+                        ],
+                        "temperature": 0.3,
+                        "max_tokens": 500
+                    }
+                    resp = self.requests.post(
+                        f"{self.base_url}/chat/completions",
+                        headers=headers,
+                        json=payload,
+                        timeout=30
+                    )
+                elif self.provider == "anthropic":
+                    headers = {
+                        "x-api-key": self.api_key,
+                        "anthropic-version": "2023-06-01",
+                        "Content-Type": "application/json"
+                    }
+                    payload = {
+                        "model": self.model,
+                        "system": SYSTEM_PROMPT,
+                        "messages": [
+                            {"role": "user", "content": user_prompt}
+                        ],
+                        "temperature": 0.3,
+                        "max_tokens": 500
+                    }
+                    resp = self.requests.post(
+                        f"{self.base_url}/messages",
+                        headers=headers,
+                        json=payload,
+                        timeout=30
+                    )
+                
                 resp.raise_for_status()
-                result_text = resp.json()["choices"][0]["message"]["content"]
+                if self.provider == "openai":
+                    result_text = resp.json()["choices"][0]["message"]["content"]
+                elif self.provider == "anthropic":
+                    result_text = resp.json()["content"][0]["text"]
             
             # 解析 JSON
             return self._parse_json_response(result_text)
             
         except Exception as e:
-            print(f"[ERROR] LLM 调用失败: {e}")
+            print(f"[ERROR] LLM 调用失败 ({self.provider}): {e}")
             return None
     
     def _parse_json_response(self, text: str) -> Optional[Dict[str, Any]]:
@@ -555,8 +602,8 @@ def main():
             print("[ERROR] 请先配置 API_KEY!")
             serial_bridge.disconnect()
             sys.exit(1)
-        print("[INFO] 使用外部 LLM API 调参器")
-        tuner = LLMTuner(API_KEY, API_BASE_URL, MODEL_NAME)
+        print(f"[INFO] 使用外部 LLM ({LLM_PROVIDER}) 调参器")
+        tuner = LLMTuner(API_KEY, API_BASE_URL, MODEL_NAME, LLM_PROVIDER)
     
     data_buffer = DataBuffer(max_size=BUFFER_SIZE)
     
