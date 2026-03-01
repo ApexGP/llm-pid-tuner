@@ -8,100 +8,105 @@
 
 ---
 
-## 📂 文件作用说明
+## 📂 项目结构：我该运行哪个文件？
 
-| 文件名 | 作用 | 核心功能 |
-| :--- | :--- | :--- |
-| **`simulator.py`** | **本地仿真调参** | 无需硬件，在电脑上运行热力学模型进行 PID 算法测试和 AI 调参演示。 |
-| **`tuner.py`** | **真实硬件调参** | 电脑端上位机，通过串口与 MCU 通信，将真实传感器数据发给 AI 并更新硬件参数。 |
-| **`firmware.cpp`** | **MCU 固件** | 运行在 Arduino/ESP32 等单片机上的代码，执行 PID 控制并与 `tuner.py` 通信。 |
-| **`system_id.py`** | **系统辨识工具** | 辅助脚本，使用 Ziegler-Nichols (Z-N) 法对系统进行初步辨识，为 AI 提供参考。 |
+如果你是第一次使用，请根据你的目的选择对应的脚本：
 
----
-
-## 🛠️ 使用场景指南
-
-### 场景一：我想先学习或测试 PID 算法 (无需硬件)
-*   **使用文件**：`simulator.py`
-*   **操作流程**：
-    1. 配置环境变量（API Key 等）。
-    2. 直接运行 `python simulator.py`。
-    3. 观察 AI 如何在虚拟热力学模型中一步步将温度稳定在 100°C。
-
-### 场景二：我想给我的真实设备（如 3D 打印机加热头）调参
-*   **使用文件**：`firmware.cpp` + `tuner.py`
-*   **操作流程**：
-    1. 将 `firmware.cpp` 修改并烧录到你的开发板（Arduino/ESP32 等）。
-    2. 连接开发板到电脑，确认串口号（如 COM3 或 /dev/ttyUSB0）。
-    3. 修改 `tuner.py` 中的 `SERIAL_PORT` 和 API 配置。
-    4. 运行 `python tuner.py`，AI 将接管你的硬件进行实时调参。
+| 文件名 | 适用人群 | 核心作用 | 需要硬件吗？ |
+| :--- | :--- | :--- | :--- |
+| **`simulator.py`** | **新手/学习者** | 在电脑上模拟一个加热器，演示 AI 如何自动调参。 | **不需要** |
+| **`tuner.py`** | **开发者/创客** | 作为一个“上位机”，通过串口连接你的 Arduino/ESP32 进行实机调参。 | **需要** |
+| **`firmware.cpp`** | **硬件工程师** | 烧录到单片机（MCU）里的代码，负责接收指令并控制电机/加热器。 | **需要** |
+| **`system_id.py`** | **进阶用户** | 辅助工具，自动计算系统的初始 PID 建议值。 | 可选 |
 
 ---
 
-## 🚀 快速开始
+## 🛠️ 快速上手 (以本地仿真为例)
 
-### 1. 安装依赖
+即使你没有硬件，也可以在 1 分钟内跑通演示：
+
+### 1. 环境准备
+确保你的电脑安装了 Python 3.8+。
 ```bash
-pip install requests serial  # 如果使用真实硬件需安装 pyserial
+pip install requests serial  # 安装必要的库
 ```
 
-### 2. 配置 LLM API (支持多种模型)
-项目支持所有 OpenAI 兼容的 API（如 GPT-4, DeepSeek, MiniMax）以及本地模型和 Claude。
+### 2. 获取并配置 API Key
+项目支持 **GPT-4, DeepSeek, Claude, Ollama** 等。
 
-**方式 A：通过环境变量配置（推荐，安全且灵活）**
+**推荐方式（环境变量）：**
+在终端（PowerShell 或 CMD）执行：
 ```powershell
-# Windows (PowerShell)
+# 以 OpenAI 为例
 $env:LLM_API_BASE_URL="https://api.openai.com/v1"
-$env:LLM_MODEL_NAME="gpt-4"
-$env:LLM_API_KEY="your-api-key"
-
-# 如果使用本地 Ollama
-$env:LLM_API_BASE_URL="http://localhost:11434/v1"
-$env:LLM_MODEL_NAME="llama3"
-$env:LLM_API_KEY="ollama"
-
-# 如果使用 Claude 原生 API
-$env:LLM_PROVIDER="anthropic"
-$env:LLM_API_BASE_URL="https://api.anthropic.com/v1"
-$env:LLM_MODEL_NAME="claude-3-5-sonnet-20240620"
+$env:LLM_MODEL_NAME="gpt-4o"
+$env:LLM_API_KEY="你的API_KEY"
 ```
 
-**方式 B：直接修改文件代码**
-在 `simulator.py` 或 `tuner.py` 顶部的 `全局配置` 区域直接修改变量值。
-
-### 3. 运行本地仿真
+### 3. 运行仿真
 ```bash
 python simulator.py
 ```
+你将看到 AI 开始观察温度曲线，并不断尝试修改 `P, I, D` 的数值，直到温度完美稳定在目标值。
 
 ---
 
-## 🤖 调参适配说明
+## 🏗️ 进阶：连接真实硬件调参
+
+如果你想用它来调试自己的硬件（如 3D 打印机喷头、恒温水箱）：
+
+### 第一步：准备固件
+1. 打开 `firmware.cpp`。
+2. 根据你的引脚连接修改代码（如 `PWM_PIN`）。
+3. 使用 Arduino IDE 或 PlatformIO 将代码烧录到你的开发板。
+
+### 第二步：配置上位机
+1. 打开 `tuner.py`。
+2. 找到 `SERIAL_PORT`，填入你的串口号（如 `COM3` 或 `/dev/ttyUSB0`）。
+3. 确保 `API_KEY` 已按上述方式配置。
+
+### 第三步：开始调参
+1. 运行 `python tuner.py`。
+2. 此时 AI 会通过串口读取传感器的实时数据，分析后将最优参数发回给开发板。
+
+---
+
+## 🤖 调参适配指南
 
 | 适配对象 | API 地址示例 | 说明 |
 | :--- | :--- | :--- |
-| **Ollama** | `http://localhost:11434/v1` | 兼容 OpenAI 格式，推荐 `llama3` 或 `qwen2` |
-| **LM Studio** | `http://localhost:1234/v1` | 开启 Local Server 后即可使用 |
-| **Claude 原生** | `https://api.anthropic.com/v1` | 需设置 `LLM_PROVIDER="anthropic"` |
-| **昇腾 (Ascend)** | 需配合推理框架 | 使用 MindSpore Serving 或 vLLM 部署后提供兼容端点 |
+| **Ollama** | `http://localhost:11434/v1` | **完全免费**！本地运行，推荐 `llama3` 或 `qwen2` |
+| **LM Studio** | `http://localhost:1234/v1` | 本地运行，界面友好 |
+| **Claude 原生** | `https://api.anthropic.com/v1` | 需设置 `$env:LLM_PROVIDER="anthropic"` |
+| **国产大模型** | `https://api.deepseek.com` | 极高性价比，推荐 DeepSeek-V3 |
 
 ---
 
-## 📈 AI 调参逻辑 (System Prompt)
+## 📈 AI 调参的逻辑是什么？
 
-AI 调参器被赋予了专业的控制工程知识，遵循以下逻辑：
-- **震荡剧烈** (Oscillation) → 减小 Kp 或增大 Kd。
-- **响应太慢** (Slow Response) → 增大 Kp。
-- **稳态误差** (Steady-State Error) → 增大 Ki。
-- **超调过大** (Overshoot) → 大幅减小 Kp 或增大 Kd。
-- **重要原则**：**禁止超调**（在某些系统中超调可能导致损坏）且**稳态优先**。
+AI 会像经验丰富的工程师一样思考：
+- **震荡剧烈？** -> 降低 **P** (Kp)，增加 **D** (Kd) 增加阻尼。
+- **升温太慢？** -> 增加 **P** (Kp) 提高动力。
+- **总差一点点才到目标？** -> 增加 **I** (Ki) 消除静差。
+- **重要原则**：**禁止超调**（防止烧毁）且**稳定第一**。
 
 ---
 
-## ⚠️ 注意事项
-1. **安全第一**：在真实硬件上使用时，请务必设置硬件级别的过温保护或紧急停止按钮。
-2. **串口占用**：运行 `tuner.py` 前请关闭 Arduino IDE 的串口监视器，否则会发生冲突。
-3. **收敛标准**：当误差小于 0.3°C 且稳定时，AI 会自动返回 `status: DONE` 结束调参。
+## ❓ 常见问题 (FAQ)
+
+**Q: 我运行 simulator.py 报错 `ModuleNotFoundError`？**
+A: 请执行 `pip install requests`。如果是运行 `tuner.py` 报错，请执行 `pip install pyserial`。
+
+**Q: 为什么 AI 调参很慢？**
+A: AI 需要收集一段时间的数据（默认 25 组）才能做出准确判断。你可以修改 `BUFFER_SIZE` 来调整观察窗口。
+
+**Q: 本地模型效果不好怎么办？**
+A: PID 调参需要一定的逻辑推理能力。建议本地模型至少使用 7B 以上规模（如 Qwen2-7B），效果最好的是 GPT-4o 或 Claude 3.5。
+
+---
+
+## ⚠️ 安全警告
+**在真实硬件上使用时，请务必在场监控！** 虽然 AI 很聪明，但传感器故障或程序死机可能导致持续加热。请确保硬件端有物理级别的断电保护。
 
 ---
 
