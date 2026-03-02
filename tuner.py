@@ -352,6 +352,32 @@ class SerialBridge:
             except: pass
         return None
 
+def select_serial_port():
+    """交互式选择串口"""
+    print("\n[INFO] 正在扫描可用串口...")
+    ports = list(serial.tools.list_ports.comports())
+    
+    if not ports:
+        print("[WARN] 未发现任何串口设备！")
+        port_name = input("请输入串口号 (例如 COM3 或 /dev/ttyUSB0): ").strip()
+        return port_name
+    
+    print(f"发现 {len(ports)} 个设备:")
+    for i, p in enumerate(ports):
+        print(f"  [{i+1}] {p.device} - {p.description}")
+    
+    while True:
+        choice = input(f"\n请选择序号 (1-{len(ports)}) 或输入 'm' 手动指定: ").strip().lower()
+        if choice == 'm':
+            return input("请输入串口号: ").strip()
+        
+        if choice.isdigit():
+            idx = int(choice) - 1
+            if 0 <= idx < len(ports):
+                return ports[idx].device
+        
+        print("[ERROR] 输入无效，请重试。")
+
 # ============================================================================
 # 主程序
 # ============================================================================
@@ -361,9 +387,40 @@ def main():
     print("  LLM PID Tuner PRO - 增强版自动调参系统")
     print("="*60)
     
+    # 串口选择逻辑
+    global SERIAL_PORT
+    if len(sys.argv) > 1:
+        # 如果命令行提供了参数，优先使用命令行参数 (方便脚本调用)
+        # 例如: tuner.exe COM3
+        if not sys.argv[1].startswith("-"):
+             SERIAL_PORT = sys.argv[1]
+    else:
+        # 否则尝试交互式选择，如果环境变量也没设置的话，或者为了用户体验更好，总是询问？
+        # 考虑到 exe 用户，总是询问比较好，除非已经设置了环境变量且看起来是有效的
+        env_port = os.getenv("SERIAL_PORT")
+        if env_port and env_port != "COM3": # "COM3" is the default in code, we ignore it
+             print(f"[INFO] 检测到环境变量 SERIAL_PORT={env_port}")
+             use_env = input("是否使用该端口? (Y/n): ").strip().lower()
+             if use_env == 'n':
+                 SERIAL_PORT = select_serial_port()
+             else:
+                 SERIAL_PORT = env_port
+        else:
+             SERIAL_PORT = select_serial_port()
+
+    if not SERIAL_PORT:
+        print("[ERROR] 未指定串口，程序退出。")
+        input("按回车键退出...")
+        return
+
+    print(f"[INFO] 即将连接到: {SERIAL_PORT}")
+    
     # 串口初始化
     bridge = SerialBridge(SERIAL_PORT, BAUD_RATE)
-    if not bridge.connect(): return
+    if not bridge.connect(): 
+        print(f"[ERROR] 无法打开串口 {SERIAL_PORT}")
+        input("按回车键退出...")
+        return
     
     # LLM 初始化
     tuner = LLMTuner(API_KEY, API_BASE_URL, MODEL_NAME, LLM_PROVIDER)

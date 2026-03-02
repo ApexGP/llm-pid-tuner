@@ -149,16 +149,19 @@ AI 会像经验丰富的工程师一样思考（Chain-of-Thought）：
 
 如果你想用它来调试自己的硬件（如 3D 打印机喷头、恒温水箱）：
 
-### 第一步：准备固件
-1. 打开 `firmware.cpp`。
-2. 根据你的引脚连接修改代码（如 `PWM_PIN`）。
-3. 使用 Arduino IDE 或 PlatformIO 将代码烧录到你的开发板。
+### 🚀 推荐方式：使用可执行程序 (Windows)
+我们在 [Releases](https://github.com/KINGSTON-115/llm-pid-tuner/releases) 中提供了打包好的 `llm-pid-tuner.exe`。
+1.  **下载**：从 Release 页面下载 exe 文件。
+2.  **配置**：设置环境变量 `$env:LLM_API_KEY="您的Key"`。
+3.  **运行**：双击运行，程序会自动扫描串口供您选择。
 
-### 第二步：配置上位机
-1. 打开 `tuner.py`。
-2. 找到 `SERIAL_PORT`，填入你的串口号（如 `COM3` 或 `/dev/ttyUSB0`）。
-3. 确保 `API_KEY` 已按上述方式配置。
-4. 运行 `python tuner.py`。
+### 源码运行方式
+1.  打开 `tuner.py`，配置好 API Key。
+2.  运行 `python tuner.py`。
+3.  按提示选择串口即可。
+
+### 固件准备
+请参考 `firmware.cpp` 将代码烧录到您的 Arduino/ESP32。
 
 ---
 
