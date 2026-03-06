@@ -60,6 +60,7 @@
 | **`tuner.py`** | **开发者/创客** | 作为一个“上位机”，通过串口连接你的 Arduino/ESP32 进行实机调参。 | **需要** |
 | **`firmware.cpp`** | **硬件工程师** | 烧录到单片机（MCU）里的代码，负责接收指令并控制电机/加热器。 | **需要** |
 | **`system_id.py`** | **进阶用户** | 辅助工具，自动计算系统的初始 PID 建议值。 | 可选 |
+| **`benchmark.py`** | **进阶用户/研究者** | 用固定随机种子对比 baseline、兜底策略和真实 LLM 调参效果。 | 不需要 |
 
 ---
 
@@ -77,7 +78,10 @@ git clone https://github.com/KINGSTON-115/llm-pid-tuner.git
 cd llm-pid-tuner
 
 # 安装必要的库
-pip install requests serial
+pip install -r requirements.txt
+
+# 或手动安装最小依赖
+pip install requests pyserial
 ```
 
 ### 2. 获取并配置 API Key
@@ -96,6 +100,11 @@ $env:LLM_API_KEY="你的API_KEY"
 ### 3. 运行仿真
 ```bash
 python simulator.py
+```
+
+### 4. 运行基准对比（可选）
+```bash
+python benchmark.py --cases baseline fallback llm --rounds 8
 ```
 
 ### 📝 运行结果示例：

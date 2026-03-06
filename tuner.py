@@ -27,6 +27,15 @@ import math
 from collections import deque
 from typing import Optional, List, Dict, Any
 
+from pid_safety import (
+    apply_pid_guardrails,
+    build_fallback_suggestion,
+    is_good_enough,
+    maybe_update_best_result,
+    pid_equals,
+    should_rollback_to_best,
+)
+
 # ============================================================================
 # 全局配置 (请根据实际情况修改)
 # ============================================================================
@@ -41,53 +50,17 @@ CONFIG = {
     "LLM_PROVIDER": "openai",
     "BUFFER_SIZE": 100,
     "MIN_ERROR_THRESHOLD": 0.3,
-    "MAX_TUNING_ROUNDS": 50
+    "MAX_TUNING_ROUNDS": 50,
+    "LLM_REQUEST_TIMEOUT": 60,
+    "LLM_DEBUG_OUTPUT": False,
+    "GOOD_ENOUGH_AVG_ERROR": 1.2,
+    "GOOD_ENOUGH_STEADY_STATE_ERROR": 0.3,
+    "GOOD_ENOUGH_OVERSHOOT": 2.0,
+    "REQUIRED_STABLE_ROUNDS": 2
 }
 
-def load_config():
-    """加载配置文件 config.json，如果不存在则创建"""
-    config_path = "config.json"
-    global CONFIG
-    
-    # 1. 尝试读取配置文件
-    if os.path.exists(config_path):
-        try:
-            with open(config_path, 'r', encoding='utf-8') as f:
-                user_config = json.load(f)
-                CONFIG.update(user_config)
-                print(f"[INFO] 已加载配置文件: {config_path}")
-        except Exception as e:
-            print(f"[WARN] 配置文件加载失败: {e}，将使用默认值。")
-    else:
-        # 2. 如果不存在，自动创建默认配置
-        try:
-            with open(config_path, 'w', encoding='utf-8') as f:
-                json.dump(CONFIG, f, indent=4, ensure_ascii=False)
-            print(f"[INFO] 未找到配置文件，已生成默认配置: {config_path}")
-            print(f"[HINT] 请打开 {config_path} 修改您的 API Key 和串口设置。")
-        except Exception as e:
-            print(f"[WARN] 无法创建配置文件: {e}")
+CONFIG_PATH = "config.json"
 
-    # 3. 环境变量覆盖 (优先级最高)
-    for key in CONFIG:
-        env_val = os.getenv(key)
-        if env_val:
-            # 类型转换
-            if isinstance(CONFIG[key], int):
-                try:
-                    CONFIG[key] = int(env_val)
-                except: pass
-            elif isinstance(CONFIG[key], float):
-                try:
-                    CONFIG[key] = float(env_val)
-                except: pass
-            else:
-                CONFIG[key] = env_val
-
-# 加载配置
-load_config()
-
-# 应用配置到全局变量
 SERIAL_PORT = CONFIG["SERIAL_PORT"]
 BAUD_RATE = CONFIG["BAUD_RATE"]
 API_KEY = CONFIG["LLM_API_KEY"]
@@ -97,6 +70,86 @@ LLM_PROVIDER = CONFIG["LLM_PROVIDER"]
 BUFFER_SIZE = CONFIG["BUFFER_SIZE"]
 MIN_ERROR_THRESHOLD = CONFIG["MIN_ERROR_THRESHOLD"]
 MAX_TUNING_ROUNDS = CONFIG["MAX_TUNING_ROUNDS"]
+LLM_REQUEST_TIMEOUT = CONFIG["LLM_REQUEST_TIMEOUT"]
+LLM_DEBUG_OUTPUT = CONFIG["LLM_DEBUG_OUTPUT"]
+GOOD_ENOUGH_AVG_ERROR = CONFIG["GOOD_ENOUGH_AVG_ERROR"]
+GOOD_ENOUGH_STEADY_STATE_ERROR = CONFIG["GOOD_ENOUGH_STEADY_STATE_ERROR"]
+GOOD_ENOUGH_OVERSHOOT = CONFIG["GOOD_ENOUGH_OVERSHOOT"]
+REQUIRED_STABLE_ROUNDS = CONFIG["REQUIRED_STABLE_ROUNDS"]
+
+def _parse_env_value(default_value: Any, raw_value: str) -> Any:
+    if isinstance(default_value, bool):
+        return raw_value.strip().lower() in {"1", "true", "yes", "on"}
+    if isinstance(default_value, int) and not isinstance(default_value, bool):
+        return int(raw_value)
+    if isinstance(default_value, float):
+        return float(raw_value)
+    return raw_value
+
+def load_config(create_if_missing: bool = True, verbose: bool = True):
+    """加载配置文件；按需创建，避免 import 时产生副作用"""
+    global CONFIG
+    
+    # 1. 尝试读取配置文件
+    if os.path.exists(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+                user_config = json.load(f)
+                CONFIG.update(user_config)
+                if verbose:
+                    print(f"[INFO] 已加载配置文件: {CONFIG_PATH}")
+        except Exception as e:
+            if verbose:
+                print(f"[WARN] 配置文件加载失败: {e}，将使用默认值。")
+    elif create_if_missing:
+        # 2. 如果不存在，自动创建默认配置
+        try:
+            with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
+                json.dump(CONFIG, f, indent=4, ensure_ascii=False)
+            if verbose:
+                print(f"[INFO] 未找到配置文件，已生成默认配置: {CONFIG_PATH}")
+                print(f"[HINT] 请打开 {CONFIG_PATH} 修改您的 API Key 和串口设置。")
+        except Exception as e:
+            if verbose:
+                print(f"[WARN] 无法创建配置文件: {e}")
+
+    # 3. 环境变量覆盖 (优先级最高)
+    for key in CONFIG:
+        env_val = os.getenv(key)
+        if env_val:
+            try:
+                CONFIG[key] = _parse_env_value(CONFIG[key], env_val)
+            except Exception:
+                if verbose:
+                    print(f"[WARN] 环境变量 {key} 值无效，已忽略。")
+
+def apply_runtime_config():
+    global SERIAL_PORT, BAUD_RATE, API_KEY, API_BASE_URL, MODEL_NAME
+    global LLM_PROVIDER, BUFFER_SIZE, MIN_ERROR_THRESHOLD, MAX_TUNING_ROUNDS
+    global LLM_REQUEST_TIMEOUT, LLM_DEBUG_OUTPUT
+    global GOOD_ENOUGH_AVG_ERROR, GOOD_ENOUGH_STEADY_STATE_ERROR, GOOD_ENOUGH_OVERSHOOT, REQUIRED_STABLE_ROUNDS
+
+    SERIAL_PORT = CONFIG["SERIAL_PORT"]
+    BAUD_RATE = CONFIG["BAUD_RATE"]
+    API_KEY = CONFIG["LLM_API_KEY"]
+    API_BASE_URL = CONFIG["LLM_API_BASE_URL"]
+    MODEL_NAME = CONFIG["LLM_MODEL_NAME"]
+    LLM_PROVIDER = CONFIG["LLM_PROVIDER"]
+    BUFFER_SIZE = CONFIG["BUFFER_SIZE"]
+    MIN_ERROR_THRESHOLD = CONFIG["MIN_ERROR_THRESHOLD"]
+    MAX_TUNING_ROUNDS = CONFIG["MAX_TUNING_ROUNDS"]
+    LLM_REQUEST_TIMEOUT = CONFIG["LLM_REQUEST_TIMEOUT"]
+    LLM_DEBUG_OUTPUT = CONFIG["LLM_DEBUG_OUTPUT"]
+    GOOD_ENOUGH_AVG_ERROR = CONFIG["GOOD_ENOUGH_AVG_ERROR"]
+    GOOD_ENOUGH_STEADY_STATE_ERROR = CONFIG["GOOD_ENOUGH_STEADY_STATE_ERROR"]
+    GOOD_ENOUGH_OVERSHOOT = CONFIG["GOOD_ENOUGH_OVERSHOOT"]
+    REQUIRED_STABLE_ROUNDS = CONFIG["REQUIRED_STABLE_ROUNDS"]
+
+def initialize_runtime_config(create_if_missing: bool = True, verbose: bool = True):
+    load_config(create_if_missing=create_if_missing, verbose=verbose)
+    apply_runtime_config()
+
+initialize_runtime_config(create_if_missing=False, verbose=False)
 
 # ============================================================================
 # 增强版 Prompt 设计
@@ -185,9 +238,6 @@ class AdvancedDataBuffer:
     def is_full(self) -> bool:
         return len(self.buffer) >= self.max_size
     
-    def get_recent_data(self, n: int = 50) -> List[Dict[str, float]]:
-        return list(self.buffer)[-n:]
-    
     def calculate_advanced_metrics(self) -> Dict[str, Any]:
         """计算高级控制指标"""
         if not self.buffer:
@@ -197,7 +247,6 @@ class AdvancedDataBuffer:
         inputs = [d.get("input", 0) for d in data]
         errors = [d.get("setpoint", 0) - d.get("input", 0) for d in data]
         abs_errors = [abs(e) for e in errors]
-        timestamps = [d.get("timestamp", 0) for d in data]
         
         # 基础指标
         avg_error = sum(abs_errors) / len(abs_errors) if abs_errors else 0
@@ -244,7 +293,7 @@ class AdvancedDataBuffer:
     
     def to_prompt_data(self) -> str:
         metrics = self.calculate_advanced_metrics()
-        recent = self.get_recent_data(20) # 只给最近 20 个点作为细节，避免 token 溢出
+
         
         # 下采样：如果数据太多，每隔几个点取一个，保持趋势可见
         all_data = list(self.buffer)
@@ -252,7 +301,7 @@ class AdvancedDataBuffer:
         sampled_data = all_data[::step]
         
         lines = []
-        lines.append(f"## 当前状态分析")
+        lines.append("## Current Status")
         lines.append(f"- 设定值 (Setpoint): {self.setpoint}")
         lines.append(f"- 当前 PID: P={self.current_pid['p']}, I={self.current_pid['i']}, D={self.current_pid['d']}")
         lines.append(f"- 平均误差: {metrics.get('avg_error', 0):.2f}")
@@ -278,11 +327,13 @@ class LLMTuner:
         self.api_key = api_key
         self.base_url = base_url
         self.model = model
-        self.provider = provider
+        self.provider = (provider or "openai").lower()
         
         # 自动识别 provider
-        if "anthropic" in base_url.lower() or "claude" in model.lower():
+        if self.provider == "anthropic" or "anthropic" in base_url.lower() or "claude" in model.lower():
             self.provider = "anthropic"
+        else:
+            self.provider = "openai"
 
         try:
             if self.provider == "openai":
@@ -292,18 +343,124 @@ class LLMTuner:
                 import anthropic
                 self.client = anthropic.Anthropic(api_key=api_key, base_url=base_url)
         except ImportError:
-            import requests
-            self.requests = requests
+            self.requests = self._import_requests()
             self.use_sdk = False
         else:
             self.use_sdk = True
+
+    def _import_requests(self):
+        import requests
+        return requests
+
+    def _ensure_requests(self):
+        if not hasattr(self, "requests") or self.requests is None:
+            self.requests = self._import_requests()
+
+    def _request_via_http(self, user_prompt: str) -> str:
+        self._ensure_requests()
+
+        if self.provider == "anthropic":
+            headers = {
+                "x-api-key": self.api_key,
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": self.model,
+                "system": SYSTEM_PROMPT,
+                "messages": [{"role": "user", "content": user_prompt}],
+                "temperature": 0.3,
+                "max_tokens": 1000
+            }
+            resp = self.requests.post(
+                f"{self.base_url}/messages",
+                headers=headers,
+                json=payload,
+                timeout=LLM_REQUEST_TIMEOUT
+            )
+            resp.raise_for_status()
+            response_json = resp.json()
+            content_blocks = response_json.get("content", [])
+            return "\n".join(block.get("text", "") for block in content_blocks if isinstance(block, dict))
+
+        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user_prompt}],
+            "temperature": 0.3
+        }
+        resp = self.requests.post(
+            f"{self.base_url}/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=LLM_REQUEST_TIMEOUT
+        )
+        resp.raise_for_status()
+        response_json = resp.json()
+        return response_json['choices'][0]['message']['content']
+
+    def _extract_json_candidates(self, text: str) -> List[str]:
+        candidates: List[str] = []
+        stripped = text.strip()
+
+        if stripped:
+            candidates.append(stripped)
+
+        fenced_matches = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL | re.IGNORECASE)
+        candidates.extend(fenced_matches)
+
+        for start in range(len(text)):
+            if text[start] != '{':
+                continue
+            depth = 0
+            for end in range(start, len(text)):
+                char = text[end]
+                if char == '{':
+                    depth += 1
+                elif char == '}':
+                    depth -= 1
+                    if depth == 0:
+                        candidates.append(text[start:end + 1])
+                        break
+
+        return candidates
+
+    def _sanitize_result(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        sanitized = dict(data)
+
+        for key in ("p", "i", "d"):
+            value = sanitized.get(key)
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                sanitized.pop(key, None)
+                continue
+
+            if not math.isfinite(numeric) or numeric < 0:
+                sanitized.pop(key, None)
+            else:
+                sanitized[key] = numeric
+
+        if "status" in sanitized:
+            status = str(sanitized["status"]).strip().upper()
+            sanitized["status"] = "DONE" if status == "DONE" else "TUNING"
+
+        if not sanitized.get("analysis_summary"):
+            sanitized["analysis_summary"] = str(sanitized.get("analysis") or "未提供分析摘要")
+
+        if not sanitized.get("thought_process"):
+            sanitized["thought_process"] = str(sanitized.get("analysis_summary") or "模型未提供详细推理")
+
+        if not sanitized.get("tuning_action"):
+            sanitized["tuning_action"] = "ADJUST_PID"
+
+        return sanitized
     
     def _parse_json(self, text: str) -> Optional[Dict[str, Any]]:
-        match = re.search(r'\{.*\}', text, re.DOTALL)
-        if match:
+        for candidate in self._extract_json_candidates(text):
             try:
-                return json.loads(match.group())
-            except:
+                return self._sanitize_result(json.loads(candidate))
+            except Exception:
                 pass
         return None
 
@@ -318,38 +475,41 @@ class LLMTuner:
 """
         try:
             if self.use_sdk:
-                if self.provider == "openai":
-                    resp = self.client.chat.completions.create(
-                        model=self.model,
-                        messages=[
-                            {"role": "system", "content": SYSTEM_PROMPT},
-                            {"role": "user", "content": user_prompt}
-                        ],
-                        temperature=0.3
-                    )
-                    content = resp.choices[0].message.content
-                elif self.provider == "anthropic":
-                    resp = self.client.messages.create(
-                        model=self.model,
-                        system=SYSTEM_PROMPT,
-                        messages=[{"role": "user", "content": user_prompt}],
-                        temperature=0.3,
-                        max_tokens=1000
-                    )
-                    content = resp.content[0].text
+                try:
+                    if self.provider == "openai":
+                        resp = self.client.chat.completions.create(
+                            model=self.model,
+                            messages=[
+                                {"role": "system", "content": SYSTEM_PROMPT},
+                                {"role": "user", "content": user_prompt}
+                            ],
+                            temperature=0.3
+                        )
+                        content = resp.choices[0].message.content
+                    elif self.provider == "anthropic":
+                        resp = self.client.messages.create(
+                            model=self.model,
+                            system=SYSTEM_PROMPT,
+                            messages=[{"role": "user", "content": user_prompt}],
+                            temperature=0.3,
+                            max_tokens=1000
+                        )
+                        content = resp.content[0].text
+                except Exception as sdk_error:
+                    print(f"[WARN] SDK 调用失败，尝试 HTTP 回退: {sdk_error}")
+                    content = self._request_via_http(user_prompt)
             else:
-                # Fallback to requests
-                headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-                payload = {
-                    "model": self.model,
-                    "messages": [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user_prompt}],
-                    "temperature": 0.3
-                }
-                resp = self.requests.post(f"{self.base_url}/chat/completions", headers=headers, json=payload)
-                content = resp.json()['choices'][0]['message']['content']
+                content = self._request_via_http(user_prompt)
             
-            print(f"\n[LLM 思考过程]\n{content[:500]}...\n") # 打印前 500 字符的思考过程
-            return self._parse_json(content)
+            if LLM_DEBUG_OUTPUT:
+                print(f"\n[LLM 原始响应预览]\n{content[:500]}...\n")
+
+            parsed = self._parse_json(content)
+            if parsed:
+                return parsed
+
+            print("[WARN] LLM 响应未能解析为 JSON，已忽略本轮建议。")
+            return None
             
         except Exception as e:
             print(f"[ERROR] LLM 调用失败: {e}")
@@ -407,6 +567,13 @@ class SerialBridge:
             except: pass
         return None
 
+
+def safe_pause(message: str = "按回车键退出..."):
+    try:
+        input(message)
+    except EOFError:
+        pass
+
 def select_serial_port():
     """交互式选择串口"""
     print("\n[INFO] 正在扫描可用串口...")
@@ -438,6 +605,8 @@ def select_serial_port():
 # ============================================================================
 
 def main():
+    initialize_runtime_config(create_if_missing=True, verbose=True)
+
     print("="*60)
     print("  LLM PID Tuner PRO - 增强版自动调参系统")
     print("="*60)
@@ -466,7 +635,7 @@ def main():
 
     if not SERIAL_PORT:
         print("[ERROR] 未指定串口，程序退出。")
-        input("按回车键退出...")
+        safe_pause()
         return
 
     print(f"[INFO] 即将连接到: {SERIAL_PORT}")
@@ -475,7 +644,7 @@ def main():
     bridge = SerialBridge(SERIAL_PORT, BAUD_RATE)
     if not bridge.connect(): 
         print(f"[ERROR] 无法打开串口 {SERIAL_PORT}")
-        input("按回车键退出...")
+        safe_pause()
         return
     
     # LLM 初始化
@@ -484,8 +653,15 @@ def main():
     # 数据与历史
     buffer = AdvancedDataBuffer(max_size=BUFFER_SIZE)
     history = TuningHistory(max_history=5)
+    good_enough_rules = {
+        "avg_error_threshold": GOOD_ENOUGH_AVG_ERROR,
+        "steady_state_error_threshold": GOOD_ENOUGH_STEADY_STATE_ERROR,
+        "overshoot_threshold": GOOD_ENOUGH_OVERSHOOT,
+    }
     
     round_num = 0
+    stable_rounds = 0
+    best_result = None
     
     try:
         bridge.send_command("STATUS") # 唤醒/检查状态
@@ -506,6 +682,36 @@ def main():
                 round_num += 1
                 metrics = buffer.calculate_advanced_metrics()
                 print(f"[第 {round_num} 轮] 分析中... AvgErr={metrics['avg_error']:.2f}, Status={metrics['status']}")
+                previous_best = best_result
+                best_result = maybe_update_best_result(best_result, buffer.current_pid, metrics, round_num)
+                if best_result is not None and best_result is not previous_best:
+                    print(
+                        f"[Best] 更新最佳参数 -> "
+                        f"P={best_result['pid']['p']}, I={best_result['pid']['i']}, D={best_result['pid']['d']}"
+                    )
+
+                if best_result and not pid_equals(buffer.current_pid, best_result["pid"]) and should_rollback_to_best(metrics, best_result["metrics"]):
+                    rollback_pid = best_result["pid"]
+                    print(
+                        f"[Rollback] 当前表现劣于第 {best_result['round']} 轮最佳结果，"
+                        f"恢复到 P={rollback_pid['p']}, I={rollback_pid['i']}, D={rollback_pid['d']}"
+                    )
+                    bridge.send_command(f"SET P:{rollback_pid['p']} I:{rollback_pid['i']} D:{rollback_pid['d']}")
+                    buffer.current_pid = dict(rollback_pid)
+
+                    if is_good_enough(best_result["metrics"], good_enough_rules):
+                        print("\n[SUCCESS] 已回滚到历史最佳且满足可用标准，提前结束调参。")
+                        break
+
+                    buffer.buffer.clear()
+                    time.sleep(1)
+                    continue
+
+                stable_rounds = stable_rounds + 1 if is_good_enough(metrics, good_enough_rules) else 0
+
+                if stable_rounds >= REQUIRED_STABLE_ROUNDS:
+                    print(f"\n[SUCCESS] 系统已连续 {stable_rounds} 轮达到可用稳定状态，提前结束调参。")
+                    break
                 
                 # 准备 Prompt
                 prompt_data = buffer.to_prompt_data()
@@ -513,21 +719,30 @@ def main():
                 
                 # 调用 LLM
                 result = tuner.analyze(prompt_data, history_text)
+
+                if not result:
+                    print("[WARN] LLM 本轮不可用，启用保守兜底策略。")
+                    result = build_fallback_suggestion(buffer.current_pid, metrics)
                 
                 if result:
+                    safe_pid, guardrail_notes = apply_pid_guardrails(buffer.current_pid, result)
+                    new_p = safe_pid['p']
+                    new_i = safe_pid['i']
+                    new_d = safe_pid['d']
+
                     # 记录历史
-                    history.add_record(round_num, buffer.current_pid, metrics, result.get('analysis_summary', ''))
-                    
-                    # 应用新参数
-                    new_p = result.get('p', buffer.current_pid['p'])
-                    new_i = result.get('i', buffer.current_pid['i'])
-                    new_d = result.get('d', buffer.current_pid['d'])
+                    history.add_record(round_num, safe_pid, metrics, result.get('analysis_summary', ''))
                     
                     print(f"[Result] {result.get('analysis_summary')}")
                     print(f"[Action] {result.get('tuning_action')} -> P={new_p}, I={new_i}, D={new_d}")
+                    if guardrail_notes:
+                        print(f"[Guardrail] {'; '.join(guardrail_notes)}")
+                    if result.get('fallback_used'):
+                        print("[Fallback] 本轮使用规则策略替代 LLM 建议。")
                     
                     cmd = f"SET P:{new_p} I:{new_i} D:{new_d}"
                     bridge.send_command(cmd)
+                    buffer.current_pid = safe_pid
                     
                     if result.get('status') == "DONE" or metrics['avg_error'] < MIN_ERROR_THRESHOLD:
                         print("\n[SUCCESS] 调参完成！")

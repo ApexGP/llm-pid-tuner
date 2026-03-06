@@ -16,10 +16,7 @@ simulator.py - 增强版 PID 调参模拟器 (PRO)
 import time
 import os
 import sys
-import json
-import math
 import random
-from collections import deque
 
 # ============================================================================
 # 配置
@@ -35,17 +32,29 @@ BUFFER_SIZE = 100         # 增加缓冲以提供更多上下文
 MAX_ROUNDS = 20           # 调参轮数
 MIN_ERROR = 0.3           # 目标误差
 CONTROL_INTERVAL = 0.2    # 仿真步长 (200ms)
+GOOD_ENOUGH_RULES = {
+    "avg_error_threshold": float(os.getenv("GOOD_ENOUGH_AVG_ERROR", "1.2")),
+    "steady_state_error_threshold": float(os.getenv("GOOD_ENOUGH_STEADY_STATE_ERROR", "0.3")),
+    "overshoot_threshold": float(os.getenv("GOOD_ENOUGH_OVERSHOOT", "2.0")),
+}
+REQUIRED_STABLE_ROUNDS = int(os.getenv("REQUIRED_STABLE_ROUNDS", "2"))
 
 SETPOINT = 200.0          # 目标温度
 INITIAL_TEMP = 20.0       # 初始温度
-PWM_MAX = 6000            # PWM 上限
-
 # 初始 PID
 kp, ki, kd = 1.0, 0.1, 0.05
 
 # 导入增强版调参器组件
 try:
     from tuner import LLMTuner, AdvancedDataBuffer, TuningHistory
+    from pid_safety import (
+        apply_pid_guardrails,
+        build_fallback_suggestion,
+        is_good_enough,
+        maybe_update_best_result,
+        pid_equals,
+        should_rollback_to_best,
+    )
 except ImportError:
     print("[ERROR] 找不到 tuner.py，请确保文件存在")
     sys.exit(1)
@@ -132,6 +141,8 @@ def run_simulation():
     history = TuningHistory(max_history=5)
     
     round_num = 0
+    stable_rounds = 0
+    best_result = None
     start_time = time.time()
     
     # 设置初始 PID 到 buffer
@@ -158,10 +169,40 @@ def run_simulation():
             metrics = buffer.calculate_advanced_metrics()
             print(f"  当前状态: AvgErr={metrics['avg_error']:.2f}, MaxErr={metrics['max_error']:.2f}, "
                   f"Overshoot={metrics['overshoot']:.1f}%, Status={metrics['status']}")
+
+            current_pid = {"p": kp, "i": ki, "d": kd}
+            previous_best = best_result
+            best_result = maybe_update_best_result(best_result, current_pid, metrics, round_num + 1)
+            if best_result is not None and best_result is not previous_best:
+                print(
+                    f"  [最佳] 记录新的最佳参数: "
+                    f"P={best_result['pid']['p']:.4f}, I={best_result['pid']['i']:.4f}, D={best_result['pid']['d']:.4f}"
+                )
+
+            if best_result and not pid_equals(current_pid, best_result["pid"]) and should_rollback_to_best(metrics, best_result["metrics"]):
+                kp = best_result["pid"]["p"]
+                ki = best_result["pid"]["i"]
+                kd = best_result["pid"]["d"]
+                buffer.current_pid = dict(best_result["pid"])
+                print(
+                    f"  [回滚] 当前表现劣于第 {best_result['round']} 轮最佳结果，"
+                    f"恢复到 P={kp:.4f}, I={ki:.4f}, D={kd:.4f}"
+                )
+                if is_good_enough(best_result["metrics"], GOOD_ENOUGH_RULES):
+                    print("\n[SUCCESS] 已回滚到历史最佳且满足可用标准，提前结束调参。")
+                    break
+                round_num += 1
+                buffer.buffer.clear()
+                continue
+
+            stable_rounds = stable_rounds + 1 if is_good_enough(metrics, GOOD_ENOUGH_RULES) else 0
             
             # 检查是否达标
             if metrics['avg_error'] < MIN_ERROR and metrics['status'] == "STABLE":
                 print("\n[SUCCESS] 调参成功！系统已稳定。")
+                break
+            if stable_rounds >= REQUIRED_STABLE_ROUNDS:
+                print(f"\n[SUCCESS] 系统已连续 {stable_rounds} 轮达到可用稳定状态，提前结束调参。")
                 break
             
             round_num += 1
@@ -173,6 +214,10 @@ def run_simulation():
             # 4. 调用 LLM
             print("  [LLM] 正在思考...")
             result = tuner.analyze(prompt_data, history_text)
+
+            if not result:
+                print("  [WARN] LLM 本轮不可用，启用保守兜底策略。")
+                result = build_fallback_suggestion(buffer.current_pid, metrics)
             
             if result:
                 analysis = result.get('analysis_summary', '无分析')
@@ -184,11 +229,19 @@ def run_simulation():
                 
                 # 更新参数
                 old_p, old_i, old_d = kp, ki, kd
-                kp = float(result.get('p', kp))
-                ki = float(result.get('i', ki))
-                kd = float(result.get('d', kd))
+                safe_pid, guardrail_notes = apply_pid_guardrails(
+                    {"p": kp, "i": ki, "d": kd},
+                    result,
+                )
+                kp = safe_pid['p']
+                ki = safe_pid['i']
+                kd = safe_pid['d']
                 
                 print(f"  [动作] {action}: P {old_p:.4f}->{kp:.4f}, I {old_i:.4f}->{ki:.4f}, D {old_d:.4f}->{kd:.4f}")
+                if guardrail_notes:
+                    print(f"  [护栏] {'; '.join(guardrail_notes)}")
+                if result.get('fallback_used'):
+                    print("  [兜底] 本轮使用规则策略替代 LLM 建议。")
                 
                 # 记录历史
                 history.add_record(round_num, {"p": kp, "i": ki, "d": kd}, metrics, analysis)
@@ -197,8 +250,6 @@ def run_simulation():
                 if result.get('status') == "DONE":
                     print("\n[LLM] 认为调参已完成。")
                     break
-            else:
-                print("  [ERROR] LLM 调用失败")
             
             # 清空缓冲，准备下一轮
             buffer.buffer.clear()

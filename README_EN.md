@@ -58,6 +58,7 @@ Whether simulating on a PC or connecting to real hardware, the workflow is as fo
 | **`tuner.py`** | **Developers/Makers** | Acts as a "Host App", connecting to your Arduino/ESP32 via serial for real tuning. | **Yes** |
 | **`firmware.cpp`** | **Hardware Engineers** | Code to flash into the MCU, responsible for receiving commands and controlling motors/heaters. | **Yes** |
 | **`system_id.py`** | **Advanced Users** | Utility tool to automatically calculate initial PID suggestions using step response. | Optional |
+| **`benchmark.py`** | **Advanced Users/Researchers** | Reproducibly compares baseline, fallback, and real LLM tuning with a fixed random seed. | No |
 
 ---
 
@@ -70,7 +71,10 @@ Ensure Python 3.8+ is installed.
 ```bash
 git clone https://github.com/KINGSTON-115/llm-pid-tuner.git
 cd llm-pid-tuner
-pip install requests serial
+pip install -r requirements.txt
+
+# Or install the minimal dependencies manually
+pip install requests pyserial
 ```
 
 ### 2. Configure API Key
@@ -88,6 +92,11 @@ $env:LLM_API_KEY="sk-..."
 ### 3. Run Simulation
 ```bash
 python simulator.py
+```
+
+### 4. Run Benchmark (Optional)
+```bash
+python benchmark.py --cases baseline fallback llm --rounds 8
 ```
 
 ---

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 PID 系统辨识工具 - 硬件版
 ================
@@ -16,18 +17,18 @@ PID 系统辨识工具 - 硬件版
     python system_id.py --mode live --port /dev/ttyUSB0
     
     # 从文件读取历史数据
-    python system_id.py --mode file --data "data.csv"
+    python system_id.py --mode file --file data.csv
     
     # 模拟分析
     python system_id.py --mode demo
 """
 
+import csv
+import os
 import serial
-import math
 import argparse
 import time
-from typing import List, Tuple, Dict, Optional
-from collections import deque
+from typing import List, Dict, Optional
 
 
 def parse_csv_line(line: str) -> Optional[Dict]:
@@ -45,6 +46,22 @@ def parse_csv_line(line: str) -> Optional[Dict]:
     except:
         pass
     return None
+
+
+def normalize_time_axis(time_data: List[float]) -> List[float]:
+    """将时间轴归一化到从 0 开始的秒单位。"""
+    if not time_data:
+        return []
+
+    normalized = [float(value) for value in time_data]
+    if len(normalized) >= 2:
+        deltas = [normalized[i] - normalized[i - 1] for i in range(1, len(normalized)) if normalized[i] >= normalized[i - 1]]
+        avg_delta = sum(deltas) / len(deltas) if deltas else 0.0
+        if avg_delta > 10.0 or normalized[-1] > 1000.0:
+            normalized = [value / 1000.0 for value in normalized]
+
+    origin = normalized[0]
+    return [value - origin for value in normalized]
 
 
 def first_order_model(tau: float, K: float, theta: float = 0) -> Dict:
@@ -78,22 +95,49 @@ def analyze_stability(poles: List) -> Dict:
 
 
 def ziegler_nichols(K: float, tau: float, theta: float, pid_type: str = "PID") -> Dict:
-    """Ziegler-Nichols PID 整定"""
-    gains = {
-        "P": (tau / (K * theta), 0, 0),
-        "PI": (0.9 * tau / (K * theta), 0.9 * tau / K, 0),
-        "PD": (1.2 * tau / (K * theta), 0, 0.6 * tau / K),
-        "PID": (1.2 * tau / (K * theta), 0.6 * tau / K, 0.6 * tau * theta / K),
-    }
-    
-    Kp, Ki, Kd = gains.get(pid_type, gains["PID"])
-    
+    """Ziegler-Nichols 开环反应曲线法，输出并联式 PID 参数。"""
+    if K <= 0 or tau <= 0 or theta <= 0:
+        return {"error": "K、tau、theta 必须都大于 0 才能整定"}
+
+    pid_type = pid_type.upper()
+
+    if pid_type == "P":
+        Kp = tau / (K * theta)
+        Ti = None
+        Td = 0.0
+    elif pid_type == "PI":
+        Kp = 0.9 * tau / (K * theta)
+        Ti = 3.33 * theta
+        Td = 0.0
+    elif pid_type == "PD":
+        Kp = 1.2 * tau / (K * theta)
+        Ti = None
+        Td = 0.5 * theta
+    else:
+        pid_type = "PID"
+        Kp = 1.2 * tau / (K * theta)
+        Ti = 2.0 * theta
+        Td = 0.5 * theta
+
+    Ki = (Kp / Ti) if Ti else 0.0
+    Kd = Kp * Td if Td else 0.0
+
+    formula = f"Kp={Kp:.3f}, Ki={Ki:.3f}, Kd={Kd:.3f}"
+    if Ti:
+        formula += f" (Ti={Ti:.3f}s"
+        formula += f", Td={Td:.3f}s)" if Td else ")"
+    elif Td:
+        formula += f" (Td={Td:.3f}s)"
+
     return {
         "type": pid_type,
+        "controller_form": "parallel",
         "Kp": Kp,
         "Ki": Ki,
         "Kd": Kd,
-        "formula": f"Kp={Kp:.3f}, Ki={Ki:.3f}, Kd={Kd:.3f}"
+        "Ti": Ti,
+        "Td": Td,
+        "formula": formula
     }
 
 
@@ -113,11 +157,15 @@ def system_identify(time_data: List[float], temp_data: List[float],
     n = len(time_data)
     if n < 5:
         return {"error": "数据点太少，至少需要5个"}
+
+    time_data = normalize_time_axis(time_data)
     
     # 1. 计算稳态增益 K
     steady_temp = sum(temp_data[-10:]) / min(10, n)
     initial_temp = temp_data[0]
     delta_temp = steady_temp - initial_temp
+    if delta_temp <= 0:
+        return {"error": "阶跃响应温升不足，无法完成辨识"}
     
     # 根据 PWM 计算增益 (假设 PWM 变化)
     if pwm_data:
@@ -192,7 +240,7 @@ def print_report(result: Dict):
     print("               🔧 系统辨识报告")
     print("="*60)
     
-    print(f"\n📊 系统参数:")
+    print("\n?? ??????:")
     print(f"   初始温度: {s['initial_temp']:.1f}°C")
     print(f"   稳态温度: {s['steady_temp']:.1f}°C")
     print(f"   温升: {s['temp_rise']:.1f}°C")
@@ -200,7 +248,7 @@ def print_report(result: Dict):
     print(f"   时间常数 τ: {s['time_constant_tau']:.4f}秒")
     print(f"   延迟 θ: {s['delay_theta']:.4f}秒")
     
-    print(f"\n🔄 传递函数:")
+    print("\n?? ???????")
     print(f"   {m['formula']}")
     
     print(f"\n📍 极点: {m['poles']}")
@@ -210,9 +258,14 @@ def print_report(result: Dict):
     print(f"\n✅ 稳定性: {'✓ 稳定' if st['stable'] else '✗ 不稳定'} ({st['reason']})")
     
     if "error" not in znpid:
-        print(f"\n🎯 Ziegler-Nichols 整定建议:")
+        print("\n?? Ziegler-Nichols ??????:")
+        print("   ???: ??? Ki/Kd ????????? PID (u=Kp*e + Ki?? dt + Kd*de/dt)")
         print(f"   PID: Kp={znpid['Kp']:.3f}, Ki={znpid['Ki']:.3f}, Kd={znpid['Kd']:.3f}")
+        if znpid.get('Ti'):
+            print(f"        Ti={znpid['Ti']:.3f}s, Td={znpid['Td']:.3f}s")
         print(f"   PI:  Kp={znpi['Kp']:.3f}, Ki={znpi['Ki']:.3f}")
+        if znpi.get('Ti'):
+            print(f"        Ti={znpi['Ti']:.3f}s")
     
     print("\n" + "="*60)
 
@@ -239,11 +292,12 @@ def read_from_serial(port: str, baud: int = 115200, duration: float = 10.0) -> D
         temp_data = []
         pwm_data = []
         start_time = None
+        deadline = time.time() + duration
         
         print(f"📡 开始读取数据 (时长: {duration}秒)...")
         print("   按 Ctrl+C 提前停止")
         
-        while time.time() - (start_time or time.time()) < duration:
+        while time.time() < deadline:
             try:
                 line = ser.readline().decode('utf-8', errors='ignore').strip()
                 if line:
@@ -260,7 +314,7 @@ def read_from_serial(port: str, baud: int = 115200, duration: float = 10.0) -> D
                         # 实时显示
                         print(f"\r   t={elapsed:.1f}s T={data['input']:.1f}°C PWM={data['pwm']:.0f}", end='')
                         
-            except Exception as e:
+            except Exception:
                 continue
         
         ser.close()
@@ -275,6 +329,51 @@ def read_from_serial(port: str, baud: int = 115200, duration: float = 10.0) -> D
         return {"error": f"串口错误: {e}"}
 
 
+def read_from_file(path: str) -> Dict:
+    """从 CSV 文件读取数据进行系统辨识。"""
+    if not path:
+        return {"error": "未提供文件路径"}
+    if not os.path.exists(path):
+        return {"error": f"文件不存在: {path}"}
+
+    time_data: List[float] = []
+    temp_data: List[float] = []
+    pwm_data: List[float] = []
+
+    try:
+        with open(path, 'r', encoding='utf-8-sig', newline='') as handle:
+            sample = handle.read(1024)
+            handle.seek(0)
+
+            if any(name in sample.lower() for name in ("timestamp", "setpoint", "input", "pwm")):
+                reader = csv.DictReader(handle)
+                for row in reader:
+                    try:
+                        time_data.append(float(row.get('timestamp', 0)))
+                        temp_data.append(float(row.get('input', row.get('temperature', 0))))
+                        pwm_data.append(float(row.get('pwm', 0)))
+                    except (TypeError, ValueError):
+                        continue
+            else:
+                for line in handle:
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    data = parse_csv_line(line)
+                    if not data:
+                        continue
+                    time_data.append(data['timestamp'])
+                    temp_data.append(data['input'])
+                    pwm_data.append(data['pwm'])
+    except OSError as exc:
+        return {"error": f"文件读取失败: {exc}"}
+
+    if len(time_data) < 5:
+        return {"error": f"文件中的有效数据点太少 ({len(time_data)})，至少需要5个"}
+
+    return system_identify(time_data, temp_data, pwm_data)
+
+
 def demo():
     """演示模式"""
     # 模拟真实硬件数据 (时间秒, 温度°C, PWM)
@@ -282,7 +381,7 @@ def demo():
     temp_data = [25.0, 25.5, 28.0, 35.0, 45.0, 55.0, 65.0, 73.0, 80.0, 85.0, 88.0]
     pwm_data = [0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255]
     
-    print("� demo 模式：分析模拟数据")
+    print("[demo] 分析模拟数据")
     result = system_identify(time_data, temp_data, pwm_data)
     print_report(result)
 
@@ -299,6 +398,8 @@ if __name__ == "__main__":
                       help="读取时长(秒)")
     parser.add_argument("--data", type=str,
                       help="内联数据: 时间,温度,PWM 空格分隔")
+    parser.add_argument("--file", type=str,
+                      help="CSV 数据文件路径")
     
     args = parser.parse_args()
     
@@ -326,8 +427,8 @@ if __name__ == "__main__":
         result = read_from_serial(args.port, args.baud, args.duration)
         print_report(result)
     elif args.mode == "file":
-        # TODO: 从文件读取
-        print("📁 文件模式开发中...")
+        result = read_from_file(args.file or args.data)
+        print_report(result)
     elif args.mode == "stdin":
         # 从 stdin 读取数据
         import sys
