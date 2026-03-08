@@ -8,6 +8,8 @@
 
 [中文](README.md) | [English](README_EN.md)
 
+[![Star History Chart](https://api.star-history.com/svg?repos=KINGSTON-115/llm-pid-tuner&type=Date)](https://star-history.com/#KINGSTON-115/llm-pid-tuner)
+
 > 如果你是第一次接触这个项目，**不要先折腾 Python**。
 > **最省事的用法是直接下载 Release 里的 `llm-pid-tuner.exe`。**
 
