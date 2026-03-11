@@ -6,7 +6,7 @@
 > 📺 [B站教程视频](https://b23.tv/WVUuIFb) - 详细视频教程手把手教你使用
 > 📺 [YouTube 教程视频](https://youtu.be/Giruc9kN53Y)
 
-[中文](README.md) | [English](README_EN.md)
+中文 | [English](./docs/en-US/README.md)
 
 [![Star History Chart](https://api.star-history.com/svg?repos=KINGSTON-115/llm-pid-tuner&type=Date)](https://star-history.com/#KINGSTON-115/llm-pid-tuner)
 
@@ -18,12 +18,12 @@
 ```text
 ┌──────────────────────── 本地仿真模式 (Simulator) ────────────────────────┐
 │                                                                        │
-│  simulator.py  ───────────── API(JSON) ─────────────>  LLM / AI Tuner   │
-│  (热系统仿真)                                           (生成 PID 建议) │
+│  simulator.py  ───────────── API(JSON) ─────────────>  LLM / AI Tuner  │
+│  (热系统仿真)                                           (生成 PID 建议)   │
 │                                                                        │
 └────────────────────────────────────────────────────────────────────────┘
 
-┌──────────────────────── 真实硬件模式 (Hardware) ────────────────────────┐
+┌──────────────────────── 真实硬件模式 (Hardware) ─────────────────────────┐
 │                                                                        │
 │  MCU / firmware.cpp ── Serial(CSV) ──> tuner.py ── API ──> LLM         │
 │  (Arduino / ESP32)                    (上位机 / exe)                    │
@@ -36,7 +36,7 @@
 - **只想调硬件，不想配开发环境**：走 `exe` 路线，见下方“3 分钟上手”。
 - **想先看看这个项目到底有没有用**：运行 `simulator.py` 做本地热系统仿真。
 - **想接自己的 Arduino / ESP32 / 其他控制板**：使用 `firmware.cpp` + `tuner.py` / `llm-pid-tuner.exe`。
-- **想二次开发或看内部设计**：看 `PROJECT_DOC.md`。
+- **想二次开发或看内部设计**：看 [PROJECT_DOC.md](docs/zh-CN/PROJECT_DOC.md)。
 
 ## 这个项目适合什么场景
 
@@ -59,10 +59,7 @@
 
 ### 第 1 步：下载打包版
 
-打开 Release 页面：
-`https://github.com/KINGSTON-115/llm-pid-tuner/releases/latest`
-
-下载资产里的 `llm-pid-tuner.exe`。
+打开 [Release](https://github.com/KINGSTON-115/llm-pid-tuner/releases/latest) 页面，并下载资产里的 `llm-pid-tuner.exe`。
 
 ### 第 2 步：准备硬件
 
@@ -160,19 +157,19 @@ timestamp_ms,setpoint,input,pwm,error,p,i,d
 
 下面是实际程序会读取的关键配置项。
 
-| 字段 | 作用 | 新手建议 |
-| :--- | :--- | :--- |
-| `SERIAL_PORT` | 串口号，支持 `AUTO` 或具体端口 | 不确定就先用 `AUTO` |
-| `BAUD_RATE` | 串口波特率 | 与你的单片机保持一致，默认 `115200` |
-| `LLM_API_KEY` | 模型服务密钥 | 必填 |
-| `LLM_API_BASE_URL` | 模型接口地址 | OpenAI 兼容接口一般都以 `/v1` 结尾 |
-| `LLM_MODEL_NAME` | 具体模型名 | 例如 `gpt-4`、`MiniMax-M2.5` |
-| `LLM_PROVIDER` | 提供商类型 | OpenAI 兼容接口填 `openai`；Claude 中转站可选 `openai_claude`；Claude 原生接口填 `anthropic` |
-| `BUFFER_SIZE` | 每轮分析采样点数 | 一般不要乱改，先用默认 |
-| `MIN_ERROR_THRESHOLD` | 判定足够接近目标的阈值 | 先用默认 |
-| `MAX_TUNING_ROUNDS` | 最大调参轮数 | 新手保持默认 |
-| `LLM_REQUEST_TIMEOUT` | LLM 请求超时秒数 | 网络慢时可适当加大 |
-| `LLM_DEBUG_OUTPUT` | 是否打印更详细的 LLM 输出 | 排查问题时再开 |
+| 字段                  | 作用                           | 新手建议                                                                                     |
+| :-------------------- | :----------------------------- | :------------------------------------------------------------------------------------------- |
+| `SERIAL_PORT`         | 串口号，支持 `AUTO` 或具体端口 | 不确定就先用 `AUTO`                                                                          |
+| `BAUD_RATE`           | 串口波特率                     | 与你的单片机保持一致，默认 `115200`                                                          |
+| `LLM_API_KEY`         | 模型服务密钥                   | 必填                                                                                         |
+| `LLM_API_BASE_URL`    | 模型接口地址                   | OpenAI 兼容接口一般都以 `/v1` 结尾                                                           |
+| `LLM_MODEL_NAME`      | 具体模型名                     | 例如 `gpt-4`、`MiniMax-M2.5`                                                                 |
+| `LLM_PROVIDER`        | 提供商类型                     | OpenAI 兼容接口填 `openai`；Claude 中转站可选 `openai_claude`；Claude 原生接口填 `anthropic` |
+| `BUFFER_SIZE`         | 每轮分析采样点数               | 一般不要乱改，先用默认                                                                       |
+| `MIN_ERROR_THRESHOLD` | 判定足够接近目标的阈值         | 先用默认                                                                                     |
+| `MAX_TUNING_ROUNDS`   | 最大调参轮数                   | 新手保持默认                                                                                 |
+| `LLM_REQUEST_TIMEOUT` | LLM 请求超时秒数               | 网络慢时可适当加大                                                                           |
+| `LLM_DEBUG_OUTPUT`    | 是否打印更详细的 LLM 输出      | 排查问题时再开                                                                               |
 
 ### 关于环境变量
 
@@ -193,15 +190,15 @@ $env:LLM_PROVIDER="openai"
 
 ## 推荐模型与接口填写方式
 
-| 方案 | `LLM_API_BASE_URL` 示例 | `LLM_PROVIDER` | 说明 |
-| :--- | :--- | :--- | :--- |
-| OpenAI | `https://api.openai.com/v1` | `openai` | 最省心 |
-| DeepSeek 兼容接口 | 对应服务商的 `/v1` 地址 | `openai` | 常见且便宜 |
-| MiniMax 兼容接口 | 对应服务商的 `/v1` 地址 | `openai` | 推理能力适合调参 |
-| Claude 中转站 / OneAPI / New API | 对应服务商的 `/v1` 地址 | `openai_claude` | Claude 模型走 OpenAI 兼容协议时用这个最直观 |
-| Ollama | `http://localhost:11434/v1` | `openai` | 本地免费部署 |
-| LM Studio | `http://localhost:1234/v1` | `openai` | 本地可视化较友好 |
-| Anthropic Claude | `https://api.anthropic.com` | `anthropic` | 原生接口用这个 |
+| 方案                             | `LLM_API_BASE_URL` 示例     | `LLM_PROVIDER`  | 说明                                        |
+| :------------------------------- | :-------------------------- | :-------------- | :------------------------------------------ |
+| OpenAI                           | `https://api.openai.com/v1` | `openai`        | 最省心                                      |
+| DeepSeek 兼容接口                | 对应服务商的 `/v1` 地址     | `openai`        | 常见且便宜                                  |
+| MiniMax 兼容接口                 | 对应服务商的 `/v1` 地址     | `openai`        | 推理能力适合调参                            |
+| Claude 中转站 / OneAPI / New API | 对应服务商的 `/v1` 地址     | `openai_claude` | Claude 模型走 OpenAI 兼容协议时用这个最直观 |
+| Ollama                           | `http://localhost:11434/v1` | `openai`        | 本地免费部署                                |
+| LM Studio                        | `http://localhost:1234/v1`  | `openai`        | 本地可视化较友好                            |
+| Anthropic Claude                 | `https://api.anthropic.com` | `anthropic`     | 原生接口用这个                              |
 
 这个项目现在做了更稳的解析和回退处理，**对 OpenAI 兼容接口更友好**。如果 SDK 路径不顺，它也会尽量走更直接的 HTTP 路径，减少“能调通 API 但程序不工作”的情况。
 
@@ -259,16 +256,16 @@ python system_id.py --file sample_step.csv
 
 ## 主要文件是干什么的
 
-| 文件 | 用途 |
-| :--- | :--- |
-| `tuner.py` | 真实硬件调参主程序，也是 exe 的核心入口 |
-| `simulator.py` | 本地热系统仿真，适合演示和验证策略 |
-| `pid_safety.py` | 参数保护、保底策略、最佳结果记录、回退逻辑 |
-| `firmware.cpp` | 单片机侧示例固件，负责串口上报与执行 PID |
-| `system_id.py` | 利用阶跃响应做系统辨识，给出初始 PID 建议 |
-| `benchmark.py` | 固定随机种子的对比工具，更偏开发验证用途 |
-| `config.json` | 运行配置文件 |
-| `PROJECT_DOC.md` | 面向开发者的内部说明文档 |
+| 文件                        | 用途                                       |
+| :-------------------------- | :----------------------------------------- |
+| `tuner.py`                  | 真实硬件调参主程序，也是 exe 的核心入口    |
+| `simulator.py`              | 本地热系统仿真，适合演示和验证策略         |
+| `pid_safety.py`             | 参数保护、保底策略、最佳结果记录、回退逻辑 |
+| `firmware.cpp`              | 单片机侧示例固件，负责串口上报与执行 PID   |
+| `system_id.py`              | 利用阶跃响应做系统辨识，给出初始 PID 建议  |
+| `benchmark.py`              | 固定随机种子的对比工具，更偏开发验证用途   |
+| `config.json`               | 运行配置文件                               |
+| `docs/zh-CN/PROJECT_DOC.md` | 面向开发者的内部说明文档                   |
 
 ---
 
@@ -352,9 +349,8 @@ python system_id.py --file sample_step.csv
 
 ## 补充说明
 
-- 最新打包版请看 Release：`https://github.com/KINGSTON-115/llm-pid-tuner/releases/latest`
-- 想看项目内部设计，请看 `PROJECT_DOC.md:1`
-- 想看英文说明，请看 `README_EN.md:1`
+- 最新打包版请看 [Release](https://github.com/KINGSTON-115/llm-pid-tuner/releases/latest)
+- 想看项目内部设计，请看 [PROJECT_DOC.md](docs/zh-CN/PROJECT_DOC.md)
 
 ## License
 

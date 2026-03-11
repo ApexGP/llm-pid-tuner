@@ -30,7 +30,7 @@ This release is not about adding flashy features. It is about making the project
 - `README.md` now leads with the packaged `exe` workflow
 - clearer `config.json` guidance
 - clearer serial / API / troubleshooting notes
-- updated `PROJECT_DOC.md` for maintainers and contributors
+- updated `docs/en-US/PROJECT_DOC.md` for maintainers and contributors
 
 ## Who should download this build
 
@@ -77,7 +77,7 @@ and keep:
 
 - If you downloaded the older Release from four days ago, download the new `llm-pid-tuner.exe`
 - If you already have an older `config.json`, compare it with the updated `README.md`
-- If you run from source, also review `README_EN.md` and `PROJECT_DOC.md`
+- If you run from source, also review `docs/en-US/README.md` and `docs/en-US/PROJECT_DOC.md`
 
 ## Safety reminder
 
@@ -92,4 +92,4 @@ For real hardware, still keep:
 
 ---
 
-After downloading, start with `README.md:1` or `README_EN.md:1` depending on your language preference.
+After downloading, start with `docs/en-US/README.md:1` or `docs/en-US/README.md:1` depending on your language preference.

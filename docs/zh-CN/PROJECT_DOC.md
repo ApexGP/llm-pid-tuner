@@ -2,7 +2,7 @@
 
 这份文档面向维护者、二次开发者，以及想快速理解项目内部结构的人。
 
-如果你只是想直接使用打包版，请先看 `README.md:1`。
+如果你只是想直接使用打包版，请先看 [README.md](../../README.md)。
 
 ## 1. 项目目标
 
@@ -182,7 +182,7 @@ Windows 可执行文件由 `PyInstaller` 打包生成，入口是 `tuner.py`。
 
 如果你要把项目交给不熟悉 Python / PID / 串口的人，请优先让对方看：
 
-- `README.md:1`
-- `RELEASE_NOTES.md:1`
+- [README.md](../../README.md)
+- [RELEASE_NOTES.md](RELEASE_NOTES.md)
 
 这两份文档已经按“先下载 exe，再配置，再连接硬件”的顺序写好了。
