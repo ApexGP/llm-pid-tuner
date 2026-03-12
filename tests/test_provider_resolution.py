@@ -1,10 +1,11 @@
 import sys
 import types
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 
-sys.path.insert(0, r"D:\Python_Learning\llm-pid-tuner")
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from tuner import LLMTuner
 
@@ -40,9 +41,9 @@ class FakeRequests:
     def post(self, url, headers=None, json=None, timeout=None):
         self.calls.append(
             {
-                "url": url,
+                "url"    : url,
                 "headers": headers or {},
-                "json": json or {},
+                "json"   : json or {},
                 "timeout": timeout,
             }
         )
@@ -98,13 +99,14 @@ class ProviderResolutionTests(unittest.TestCase):
             "anthropic",
         )
         fake_requests = FakeRequests({"content": [{"text": "ok"}]})
-        tuner.requests = fake_requests
-
+        tuner.requests = fake_requests  # type: ignore[assignment]
         content = tuner._request_via_http("hello")
 
         self.assertEqual(tuner.provider, "anthropic")
         self.assertEqual(content, "ok")
-        self.assertEqual(fake_requests.calls[0]["url"], "https://api.anthropic.com/messages")
+        self.assertEqual(
+            fake_requests.calls[0]["url"], "https://api.anthropic.com/messages"
+        )
         self.assertIn("x-api-key", fake_requests.calls[0]["headers"])
 
     def test_claude_openai_transport_uses_chat_completions_endpoint(self):
@@ -115,13 +117,13 @@ class ProviderResolutionTests(unittest.TestCase):
             "openai_claude",
         )
         fake_requests = FakeRequests(
-            {"choices": [{"message": {"content": "{\"status\":\"DONE\"}"}}]}
+            {"choices": [{"message": {"content": '{"status":"DONE"}'}}]}
         )
-        tuner.requests = fake_requests
+        tuner.requests = fake_requests  # type: ignore[assignment]
 
         content = tuner._request_via_http("hello")
 
-        self.assertEqual(content, "{\"status\":\"DONE\"}")
+        self.assertEqual(content, '{"status":"DONE"}')
         self.assertEqual(
             fake_requests.calls[0]["url"],
             "https://relay.example.com/v1/chat/completions",
