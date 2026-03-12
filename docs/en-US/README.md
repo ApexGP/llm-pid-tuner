@@ -2,7 +2,7 @@
 
 An LLM-assisted PID tuning tool focused on reducing the painful trial-and-error process of real controller tuning.
 
-[中文](README.md) | [English](README_EN.md)
+[中文](../../README.md) | English
 
 [![Star History Chart](https://api.star-history.com/svg?repos=KINGSTON-115/llm-pid-tuner&type=Date)](https://star-history.com/#KINGSTON-115/llm-pid-tuner)
 
@@ -16,18 +16,18 @@ An LLM-assisted PID tuning tool focused on reducing the painful trial-and-error 
 
 ```text
 ┌──────────────────────── Local Simulation Mode ──────────────────────────┐
-│                                                                        │
+│                                                                         │
 │  simulator.py  ───────────── API(JSON) ─────────────>  LLM / AI Tuner   │
 │  (thermal model)                                        (PID decisions) │
-│                                                                        │
-└────────────────────────────────────────────────────────────────────────┘
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
 
 ┌──────────────────────── Real Hardware Mode ─────────────────────────────┐
-│                                                                        │
-│  MCU / firmware.cpp ── Serial(CSV) ──> tuner.py ── API ──> LLM         │
+│                                                                         │
+│  MCU / firmware.cpp ── Serial(CSV) ──> tuner.py ── API ──> LLM          │
 │  (Arduino / ESP32)                    (host app / exe)                  │
-│                                                                        │
-└────────────────────────────────────────────────────────────────────────┘
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Best starting path
@@ -35,7 +35,7 @@ An LLM-assisted PID tuning tool focused on reducing the painful trial-and-error 
 - **Just want to tune hardware**: use the packaged `exe`
 - **Want to see the idea first**: run `simulator.py`
 - **Want to integrate your own board**: use `firmware.cpp` + `tuner.py`
-- **Want internals / maintenance notes**: read `PROJECT_DOC.md`
+- **Want internals**: read [PROJECT_DOC.md](PROJECT_DOC.md)
 
 ---
 
@@ -43,11 +43,7 @@ An LLM-assisted PID tuning tool focused on reducing the painful trial-and-error 
 
 ### 1. Download the packaged app
 
-Latest Release:
-
-`https://github.com/KINGSTON-115/llm-pid-tuner/releases/latest`
-
-Download `llm-pid-tuner.exe` from the Assets section.
+Open [Latest Release](https://github.com/KINGSTON-115/llm-pid-tuner/releases/latest) page and download `llm-pid-tuner.exe` from the Assets section.
 
 ### 2. Prepare hardware
 
@@ -131,16 +127,16 @@ In practice, this means the tool tries to be useful on real hardware, not just a
 
 ## Key config fields
 
-| Field | Meaning | Beginner advice |
-| :--- | :--- | :--- |
-| `SERIAL_PORT` | Serial port or `AUTO` | Start with `AUTO` |
-| `BAUD_RATE` | Serial baud rate | Match your firmware |
-| `LLM_API_KEY` | Model API key | Required |
-| `LLM_API_BASE_URL` | API base URL | OpenAI-compatible endpoints usually end with `/v1` |
-| `LLM_MODEL_NAME` | Model name | Example: `gpt-4`, `MiniMax-M2.5` |
-| `LLM_PROVIDER` | Provider type | Use `openai` for OpenAI-compatible APIs, `openai_claude` for Claude relays, and `anthropic` for native Claude APIs |
-| `BUFFER_SIZE` | Samples per tuning round | Keep the default first |
-| `MAX_TUNING_ROUNDS` | Maximum rounds | Keep the default first |
+| Field               | Meaning                  | Beginner advice                                                                                                    |
+| :------------------ | :----------------------- | :----------------------------------------------------------------------------------------------------------------- |
+| `SERIAL_PORT`       | Serial port or `AUTO`    | Start with `AUTO`                                                                                                  |
+| `BAUD_RATE`         | Serial baud rate         | Match your firmware                                                                                                |
+| `LLM_API_KEY`       | Model API key            | Required                                                                                                           |
+| `LLM_API_BASE_URL`  | API base URL             | OpenAI-compatible endpoints usually end with `/v1`                                                                 |
+| `LLM_MODEL_NAME`    | Model name               | Example: `gpt-4`, `MiniMax-M2.5`                                                                                   |
+| `LLM_PROVIDER`      | Provider type            | Use `openai` for OpenAI-compatible APIs, `openai_claude` for Claude relays, and `anthropic` for native Claude APIs |
+| `BUFFER_SIZE`       | Samples per tuning round | Keep the default first                                                                                             |
+| `MAX_TUNING_ROUNDS` | Maximum rounds           | Keep the default first                                                                                             |
 
 Environment variables are also supported and override `config.json`, but beginners usually find `config.json` easier.
 
@@ -148,15 +144,15 @@ Environment variables are also supported and override `config.json`, but beginne
 
 ## Recommended providers
 
-| Provider | `LLM_API_BASE_URL` example | `LLM_PROVIDER` |
-| :--- | :--- | :--- |
-| OpenAI | `https://api.openai.com/v1` | `openai` |
-| MiniMax-compatible | provider `/v1` URL | `openai` |
-| DeepSeek-compatible | provider `/v1` URL | `openai` |
-| Claude relay / OneAPI / New API | provider `/v1` URL | `openai_claude` |
-| Ollama | `http://localhost:11434/v1` | `openai` |
-| LM Studio | `http://localhost:1234/v1` | `openai` |
-| Anthropic Claude | `https://api.anthropic.com` | `anthropic` |
+| Provider                        | `LLM_API_BASE_URL` example  | `LLM_PROVIDER`  |
+| :------------------------------ | :-------------------------- | :-------------- |
+| OpenAI                          | `https://api.openai.com/v1` | `openai`        |
+| MiniMax-compatible              | provider `/v1` URL          | `openai`        |
+| DeepSeek-compatible             | provider `/v1` URL          | `openai`        |
+| Claude relay / OneAPI / New API | provider `/v1` URL          | `openai_claude` |
+| Ollama                          | `http://localhost:11434/v1` | `openai`        |
+| LM Studio                       | `http://localhost:1234/v1`  | `openai`        |
+| Anthropic Claude                | `https://api.anthropic.com` | `anthropic`     |
 
 The current runtime is hardened for OpenAI-compatible endpoints and includes a more direct HTTP fallback path when SDK behavior is not enough.
 
@@ -192,15 +188,15 @@ Optional tools:
 
 ## Main files
 
-| File | Purpose |
-| :--- | :--- |
-| `tuner.py` | Main hardware tuning runtime and exe entry |
-| `simulator.py` | Local thermal simulation |
-| `pid_safety.py` | Guardrails, fallback logic, best-result tracking, rollback |
-| `firmware.cpp` | Example MCU firmware |
-| `system_id.py` | Step-response based system identification |
-| `benchmark.py` | Fixed-seed comparison utility |
-| `PROJECT_DOC.md` | Developer-oriented project notes |
+| File                        | Purpose                                                    |
+| :-------------------------- | :--------------------------------------------------------- |
+| `tuner.py`                  | Main hardware tuning runtime and exe entry                 |
+| `simulator.py`              | Local thermal simulation                                   |
+| `pid_safety.py`             | Guardrails, fallback logic, best-result tracking, rollback |
+| `firmware.cpp`              | Example MCU firmware                                       |
+| `system_id.py`              | Step-response based system identification                  |
+| `benchmark.py`              | Fixed-seed comparison utility                              |
+| `docs/en-US/PROJECT_DOC.md` | Developer-oriented project notes                           |
 
 ---
 

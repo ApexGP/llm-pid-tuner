@@ -30,7 +30,7 @@
 - `README.md` 现在把 `exe` 用法放在最前面
 - 明确说明 `config.json` 怎么填
 - 加入更清晰的串口、API、常见报错排查说明
-- 补充 `PROJECT_DOC.md` 方便后续维护和二次开发
+- 补充 `docs/zh-CN/PROJECT_DOC.md` 方便后续维护和二次开发
 
 ## 最适合谁下载这个版本
 
@@ -77,7 +77,7 @@
 
 - 如果你之前下载过四天前的旧 Release，请重新下载本次新的 `llm-pid-tuner.exe`
 - 如果你之前已经有旧的 `config.json`，建议对照新的 `README.md` 检查字段是否完整
-- 如果你是源码用户，建议同步更新 `README.md`、`README_EN.md` 和 `PROJECT_DOC.md`
+- 如果你是源码用户，建议同步更新 `README.md`、和 `docs/zh-CN/PROJECT_DOC.md`
 
 ## 仍然要提醒的事
 
