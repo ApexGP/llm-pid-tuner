@@ -16,6 +16,9 @@ dist/
 # Configuration (Sensitive Data)
 config.json
 
+# Benchmark Results
+result.json
+
 # IDE
 .vscode/
 .idea/
