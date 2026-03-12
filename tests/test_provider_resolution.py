@@ -12,19 +12,19 @@ from tuner import LLMTuner
 
 class FakeOpenAI:
     def __init__(self, api_key, base_url):
-        self.api_key = api_key
+        self.api_key  = api_key
         self.base_url = base_url
 
 
 class FakeAnthropic:
     def __init__(self, api_key, base_url):
-        self.api_key = api_key
+        self.api_key  = api_key
         self.base_url = base_url
 
 
 class FakeResponse:
     def __init__(self, payload):
-        self.payload = payload
+        self.payload  = payload
 
     def raise_for_status(self):
         return None
@@ -36,7 +36,7 @@ class FakeResponse:
 class FakeRequests:
     def __init__(self, payload):
         self.payload = payload
-        self.calls = []
+        self.calls   = []
 
     def post(self, url, headers=None, json=None, timeout=None):
         self.calls.append(
@@ -58,8 +58,8 @@ def build_fake_module(name, client_class_name, client_class):
 
 class ProviderResolutionTests(unittest.TestCase):
     def setUp(self):
-        openai_module = build_fake_module("openai", "OpenAI", FakeOpenAI)
-        anthropic_module = build_fake_module("anthropic", "Anthropic", FakeAnthropic)
+        openai_module     = build_fake_module("openai", "OpenAI", FakeOpenAI)
+        anthropic_module  = build_fake_module("anthropic", "Anthropic", FakeAnthropic)
         self.module_patch = patch.dict(
             sys.modules,
             {"openai": openai_module, "anthropic": anthropic_module},
@@ -98,7 +98,7 @@ class ProviderResolutionTests(unittest.TestCase):
             "claude-3-5-sonnet",
             "anthropic",
         )
-        fake_requests = FakeRequests({"content": [{"text": "ok"}]})
+        fake_requests  = FakeRequests({"content": [{"text": "ok"}]})
         tuner.requests = fake_requests  # type: ignore[assignment]
         content = tuner._request_via_http("hello")
 
@@ -116,7 +116,7 @@ class ProviderResolutionTests(unittest.TestCase):
             "claude-3-5-sonnet",
             "openai_claude",
         )
-        fake_requests = FakeRequests(
+        fake_requests  = FakeRequests(
             {"choices": [{"message": {"content": '{"status":"DONE"}'}}]}
         )
         tuner.requests = fake_requests  # type: ignore[assignment]
