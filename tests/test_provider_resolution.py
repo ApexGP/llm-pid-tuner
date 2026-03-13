@@ -1,29 +1,30 @@
 import sys
 import types
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 
-sys.path.insert(0, r"D:\Python_Learning\llm-pid-tuner")
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from tuner import LLMTuner
 
 
 class FakeOpenAI:
     def __init__(self, api_key, base_url):
-        self.api_key = api_key
+        self.api_key  = api_key
         self.base_url = base_url
 
 
 class FakeAnthropic:
     def __init__(self, api_key, base_url):
-        self.api_key = api_key
+        self.api_key  = api_key
         self.base_url = base_url
 
 
 class FakeResponse:
     def __init__(self, payload):
-        self.payload = payload
+        self.payload  = payload
 
     def raise_for_status(self):
         return None
@@ -35,14 +36,14 @@ class FakeResponse:
 class FakeRequests:
     def __init__(self, payload):
         self.payload = payload
-        self.calls = []
+        self.calls   = []
 
     def post(self, url, headers=None, json=None, timeout=None):
         self.calls.append(
             {
-                "url": url,
+                "url"    : url,
                 "headers": headers or {},
-                "json": json or {},
+                "json"   : json or {},
                 "timeout": timeout,
             }
         )
@@ -57,8 +58,8 @@ def build_fake_module(name, client_class_name, client_class):
 
 class ProviderResolutionTests(unittest.TestCase):
     def setUp(self):
-        openai_module = build_fake_module("openai", "OpenAI", FakeOpenAI)
-        anthropic_module = build_fake_module("anthropic", "Anthropic", FakeAnthropic)
+        openai_module     = build_fake_module("openai", "OpenAI", FakeOpenAI)
+        anthropic_module  = build_fake_module("anthropic", "Anthropic", FakeAnthropic)
         self.module_patch = patch.dict(
             sys.modules,
             {"openai": openai_module, "anthropic": anthropic_module},
@@ -97,14 +98,15 @@ class ProviderResolutionTests(unittest.TestCase):
             "claude-3-5-sonnet",
             "anthropic",
         )
-        fake_requests = FakeRequests({"content": [{"text": "ok"}]})
-        tuner.requests = fake_requests
-
+        fake_requests  = FakeRequests({"content": [{"text": "ok"}]})
+        tuner.requests = fake_requests  # type: ignore[assignment]
         content = tuner._request_via_http("hello")
 
         self.assertEqual(tuner.provider, "anthropic")
         self.assertEqual(content, "ok")
-        self.assertEqual(fake_requests.calls[0]["url"], "https://api.anthropic.com/messages")
+        self.assertEqual(
+            fake_requests.calls[0]["url"], "https://api.anthropic.com/messages"
+        )
         self.assertIn("x-api-key", fake_requests.calls[0]["headers"])
 
     def test_claude_openai_transport_uses_chat_completions_endpoint(self):
@@ -114,14 +116,14 @@ class ProviderResolutionTests(unittest.TestCase):
             "claude-3-5-sonnet",
             "openai_claude",
         )
-        fake_requests = FakeRequests(
-            {"choices": [{"message": {"content": "{\"status\":\"DONE\"}"}}]}
+        fake_requests  = FakeRequests(
+            {"choices": [{"message": {"content": '{"status":"DONE"}'}}]}
         )
-        tuner.requests = fake_requests
+        tuner.requests = fake_requests  # type: ignore[assignment]
 
         content = tuner._request_via_http("hello")
 
-        self.assertEqual(content, "{\"status\":\"DONE\"}")
+        self.assertEqual(content, '{"status":"DONE"}')
         self.assertEqual(
             fake_requests.calls[0]["url"],
             "https://relay.example.com/v1/chat/completions",
