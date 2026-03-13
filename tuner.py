@@ -19,15 +19,12 @@ tuner.py - LLM PID 自动调参系统 (History-Aware + Chain-of-Thought)
 import serial
 import serial.tools.list_ports
 import time
-import json
-import re
 import sys
-import os
-import math
-import traceback
-from collections import deque
-from typing import Optional, List, Dict, Any
 
+from core.config import CONFIG, initialize_runtime_config
+from core.buffer import AdvancedDataBuffer
+from core.history import TuningHistory
+from llm.client import LLMTuner
 from pid_safety import (
     apply_pid_guardrails,
     build_fallback_suggestion,
@@ -38,559 +35,7 @@ from pid_safety import (
 )
 
 # ============================================================================
-# 全局配置 (请根据实际情况修改)
-# ============================================================================
-
-# 默认配置
-CONFIG = {
-    "SERIAL_PORT"                   : "AUTO", # "AUTO" 或具体端口号 (如 "COM3")
-    "BAUD_RATE"                     : 115200,
-    "LLM_API_KEY"                   : "your-api-key-here",
-    "LLM_API_BASE_URL"              : "https://api.openai.com/v1",
-    "LLM_MODEL_NAME"                : "gpt-4",
-    "LLM_PROVIDER"                  : "openai",
-    "BUFFER_SIZE"                   : 100,
-    "MIN_ERROR_THRESHOLD"           : 0.3,
-    "MAX_TUNING_ROUNDS"             : 50,
-    "LLM_REQUEST_TIMEOUT"           : 60,
-    "LLM_DEBUG_OUTPUT"              : False,
-    "GOOD_ENOUGH_AVG_ERROR"         : 1.2,
-    "GOOD_ENOUGH_STEADY_STATE_ERROR": 0.3,
-    "GOOD_ENOUGH_OVERSHOOT"         : 2.0,
-    "REQUIRED_STABLE_ROUNDS"        : 2,
-}
-
-CONFIG_PATH = "config.json"
-
-
-def _parse_env_value(default_value: Any, raw_value: str) -> Any:
-    if isinstance(default_value, bool):
-        return raw_value.strip().lower() in {"1", "true", "yes", "on"}
-    if isinstance(default_value, int) and not isinstance(default_value, bool):
-        return int(raw_value)
-    if isinstance(default_value, float):
-        return float(raw_value)
-    return raw_value
-
-
-def load_config(create_if_missing: bool = True, verbose: bool = True):
-    """加载配置文件；按需创建，避免 import 时产生副作用"""
-    global CONFIG
-
-    # 1. 尝试读取配置文件
-    if os.path.exists(CONFIG_PATH):
-        try:
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                user_config = json.load(f)
-                CONFIG.update(user_config)
-                if verbose:
-                    print(f"[INFO] 已加载配置文件: {CONFIG_PATH}")
-        except Exception as e:
-            if verbose:
-                print(f"[WARN] 配置文件加载失败: {e}，将使用默认值。")
-    elif create_if_missing:
-        # 2. 如果不存在，自动创建默认配置
-        try:
-            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-                json.dump(CONFIG, f, indent=4, ensure_ascii=False)
-            if verbose:
-                print(f"[INFO] 未找到配置文件，已生成默认配置: {CONFIG_PATH}")
-                print(f"[HINT] 请打开 {CONFIG_PATH} 修改您的 API Key 和串口设置。")
-        except Exception as e:
-            if verbose:
-                print(f"[WARN] 无法创建配置文件: {e}")
-
-    # 3. 环境变量覆盖 (优先级最高)
-    for key in CONFIG:
-        env_val = os.getenv(key)
-        if env_val:
-            try:
-                CONFIG[key] = _parse_env_value(CONFIG[key], env_val)
-            except Exception:
-                if verbose:
-                    print(f"[WARN] 环境变量 {key} 值无效，已忽略。")
-
-
-def apply_runtime_config():
-    global SERIAL_PORT, BAUD_RATE, API_KEY, API_BASE_URL, MODEL_NAME, LLM_PROVIDER
-    global BUFFER_SIZE, MIN_ERROR_THRESHOLD, MAX_TUNING_ROUNDS
-    global LLM_REQUEST_TIMEOUT, LLM_DEBUG_OUTPUT
-    global GOOD_ENOUGH_AVG_ERROR, GOOD_ENOUGH_STEADY_STATE_ERROR, GOOD_ENOUGH_OVERSHOOT
-    global REQUIRED_STABLE_ROUNDS
-
-    SERIAL_PORT                    = CONFIG["SERIAL_PORT"]
-    BAUD_RATE                      = CONFIG["BAUD_RATE"]
-    API_KEY                        = CONFIG["LLM_API_KEY"]
-    API_BASE_URL                   = CONFIG["LLM_API_BASE_URL"]
-    MODEL_NAME                     = CONFIG["LLM_MODEL_NAME"]
-    LLM_PROVIDER                   = CONFIG["LLM_PROVIDER"]
-    BUFFER_SIZE                    = CONFIG["BUFFER_SIZE"]
-    MIN_ERROR_THRESHOLD            = CONFIG["MIN_ERROR_THRESHOLD"]
-    MAX_TUNING_ROUNDS              = CONFIG["MAX_TUNING_ROUNDS"]
-    LLM_REQUEST_TIMEOUT            = CONFIG["LLM_REQUEST_TIMEOUT"]
-    LLM_DEBUG_OUTPUT               = CONFIG["LLM_DEBUG_OUTPUT"]
-    GOOD_ENOUGH_AVG_ERROR          = CONFIG["GOOD_ENOUGH_AVG_ERROR"]
-    GOOD_ENOUGH_STEADY_STATE_ERROR = CONFIG["GOOD_ENOUGH_STEADY_STATE_ERROR"]
-    GOOD_ENOUGH_OVERSHOOT          = CONFIG["GOOD_ENOUGH_OVERSHOOT"]
-    REQUIRED_STABLE_ROUNDS         = CONFIG["REQUIRED_STABLE_ROUNDS"]
-
-
-def initialize_runtime_config(create_if_missing: bool = True, verbose: bool = True):
-    load_config(create_if_missing=create_if_missing, verbose=verbose)
-    apply_runtime_config()
-
-
-initialize_runtime_config(create_if_missing=False, verbose=False)
-
-# ============================================================================
-# 增强版 Prompt 设计
-# ============================================================================
-
-SYSTEM_PROMPT = """你是一个世界顶级的 PID 控制算法专家，精通自动控制原理和系统辨识。
-
-## 你的任务
-作为一个 PID 调参助手，你需要根据系统的历史表现和当前数据，通过逻辑推理 (Chain-of-Thought) 给出最优的 PID 参数建议。
-
-## 核心原则
-1. **稳态优先**：首要任务是消除稳态误差。
-2. **抑制震荡**：任何形式的等幅震荡或发散震荡都是不可接受的。
-3. **防止超调**：尽量减少超调量，对于热力系统，超调可能导致不可逆的后果。
-4. **循序渐进**：参数调整应平滑，避免剧烈跳变（除非系统极不稳定）。
-
-## 输入信息结构
-- **系统目标**：设定值 (Setpoint)。
-- **当前状态**：当前的 PID 参数。
-- **历史记录**：过去几轮的参数尝试及其对应的性能指标（误差、超调、震荡情况）。
-- **当前数据**：最近的时间序列数据摘要。
-
-## 输出格式 (JSON)
-必须严格遵循以下 JSON 格式：
-{
-  "thought_process": "详细的推理过程：1. 分析当前误差趋势... 2. 对比历史记录，发现增加 P 导致了震荡... 3. 决定减少 P 并微调 I...",
-  "analysis_summary": "简短总结 (50字以内)",
-  "tuning_action": "INCREASE_P | DECREASE_P | INCREASE_I | ... (主要动作)",
-  "p": <float>,
-  "i": <float>,
-  "d": <float>,
-  "status": "TUNING" // "DONE" if converged
-}
-"""
-
-# ============================================================================
-# 历史记录管理器
-# ============================================================================
-
-
-class TuningHistory:
-    """记录调参历史，用于 Prompt 上下文增强"""
-
-    def __init__(self, max_history: int = 5):
-        self.history = deque(maxlen=max_history)
-
-    def add_record(
-        self,
-        round_num: int,
-        pid      : Dict[str, float],
-        metrics  : Dict[str, float],
-        analysis : str,
-    ):
-        record = {
-            "round"   : round_num,
-            "pid"     : pid,
-            "metrics" : metrics,
-            "analysis": analysis,
-        }
-        self.history.append(record)
-
-    def to_prompt_text(self) -> str:
-        if not self.history:
-            return "无历史记录 (这是第一轮)"
-
-        text = "## 调参历史 (最近几轮):\n"
-        for rec in self.history:
-            m     = rec["metrics"]
-            pid   = rec["pid"]
-            text += (
-                f"- Round {rec['round']}: P={pid['p']:.4f}, I={pid['i']:.4f}, D={pid['d']:.4f} "
-                f"-> AvgErr={m.get('avg_error', 0):.2f}, MaxErr={m.get('max_error', 0):.2f}, "
-                f"Overshoot={m.get('overshoot', 0):.1f}%, Status={m.get('status', 'UNKNOWN')}\n"
-            )
-        return text
-
-
-# ============================================================================
-# 数据缓冲与高级指标计算
-# ============================================================================
-
-
-class AdvancedDataBuffer:
-    """增强版数据缓冲器"""
-
-    def __init__(self, max_size: int = 100):
-        self.max_size    = max_size
-        self.buffer      = deque(maxlen=max_size)
-        self.current_pid = {"p": 1.0, "i": 0.1, "d": 0.05}
-        self.setpoint    = 100.0
-
-    def add(self, data: Dict[str, float]):
-        self.buffer.append(data)
-        if "p" in data:
-            self.current_pid = {
-                "p": data.get("p", 1.0),
-                "i": data.get("i", 0.1),
-                "d": data.get("d", 0.05),
-            }
-        if "setpoint" in data:
-            self.setpoint = data["setpoint"]
-
-    def is_full(self) -> bool:
-        return len(self.buffer) >= self.max_size
-
-    def reset(self):
-        self.buffer.clear()
-
-    def calculate_advanced_metrics(self) -> Dict[str, Any]:
-        """计算高级控制指标"""
-        if not self.buffer:
-            return {}
-
-        data       = list(self.buffer)
-        inputs     = [d.get("input", 0) for d in data]
-        errors     = [d.get("setpoint", 0) - d.get("input", 0) for d in data]
-        abs_errors = [abs(e) for e in errors]
-
-        # 基础指标
-        avg_error     = sum(abs_errors) / len(abs_errors) if abs_errors else 0
-        max_error     = max(abs_errors) if abs_errors else 0
-        current_error = abs_errors[-1]
-
-        # 高级指标：超调量 (Overshoot)
-        # 只有当输入曾经超过设定值时才计算
-        max_input = max(inputs)
-        overshoot = 0.0
-        if max_input > self.setpoint and self.setpoint != 0:
-            overshoot = ((max_input - self.setpoint) / self.setpoint) * 100.0
-
-        # 高级指标：稳态误差 (Steady State Error) - 用最后 20% 数据的平均误差估计
-        steady_state_len   = max(1, int(len(data) * 0.2))
-        steady_state_error = sum(abs_errors[-steady_state_len:]) / steady_state_len
-
-        # 高级指标：震荡检测 (Oscillation)
-        # 计算过零点次数 (Error sign changes)
-        zero_crossings = 0
-        for i in range(1, len(errors)):
-            if (errors[i - 1] > 0 and errors[i] < 0) or (
-                errors[i - 1] < 0 and errors[i] > 0
-            ):
-                zero_crossings += 1
-
-        # 状态判断
-        status = "STABLE"
-        if zero_crossings > len(data) * 0.3:  # 频繁过零 -> 震荡
-            status = "OSCILLATING"
-        elif overshoot > 5.0:  # 超调 > 5%
-            status = "OVERSHOOTING"
-        elif avg_error > 10.0 and steady_state_error > 5.0:
-            status = "SLOW_RESPONSE"
-
-        return {
-            "avg_error"         : avg_error,
-            "max_error"         : max_error,
-            "current_error"     : current_error,
-            "overshoot"         : overshoot,
-            "steady_state_error": steady_state_error,
-            "zero_crossings"    : zero_crossings,
-            "status"            : status,
-            "setpoint"          : self.setpoint,
-        }
-
-    def to_prompt_data(self) -> str:
-        metrics = self.calculate_advanced_metrics()
-
-        # 下采样：如果数据太多，每隔几个点取一个，保持趋势可见
-        all_data     = list(self.buffer)
-        step         = max(1, len(all_data) // 30)
-        sampled_data = all_data[::step]
-
-        lines = []
-        lines.append("## Current Status")
-        lines.append(f"- 设定值 (Setpoint): {self.setpoint}")
-        lines.append(
-            f"- 当前 PID: P={self.current_pid['p']}, I={self.current_pid['i']}, D={self.current_pid['d']}"
-        )
-        lines.append(f"- 平均误差: {metrics.get('avg_error', 0):.2f}")
-        lines.append(f"- 最大误差: {metrics.get('max_error', 0):.2f}")
-        lines.append(f"- 超调量: {metrics.get('overshoot', 0):.1f}%")
-        lines.append(f"- 稳态误差估算: {metrics.get('steady_state_error', 0):.2f}")
-        lines.append(
-            f"- 震荡检测: 过零点 {metrics.get('zero_crossings', 0)} 次 (状态: {metrics.get('status', 'UNKNOWN')})"
-        )
-        lines.append("")
-        lines.append(f"## 时间序列数据摘要 (采样 {len(sampled_data)} 点):")
-        lines.append("Timestamp, Input, PWM, Error")
-
-        for d in sampled_data:
-            lines.append(
-                f"{d.get('timestamp', 0):.0f}, {d.get('input', 0):.2f}, {d.get('pwm', 0):.1f}, {d.get('error', 0):.2f}"
-            )
-
-        return "\n".join(lines)
-
-
-# ============================================================================
-# LLM 接口类 (复用基础逻辑)
-# ============================================================================
-
-
-class LLMTuner:
-    def __init__(
-        self, api_key: str, base_url: str, model: str, provider: str = "openai"
-    ):
-        self.api_key         = api_key
-        self.base_url        = (base_url or "").rstrip("/")
-        self.model           = model
-        self.provider_choice = self._normalize_provider_choice(provider)
-        self.provider        = self._resolve_transport()
-        self.timeout         = CONFIG.get("LLM_REQUEST_TIMEOUT", 60)
-        self.debug_output    = CONFIG.get("LLM_DEBUG_OUTPUT", False)
-        self.use_sdk         = False
-        self.client          = None
-
-        try:
-            if self.provider == "openai":
-                import openai
-
-                self.client = openai.OpenAI(api_key=api_key, base_url=self.base_url)
-            elif self.provider == "anthropic":
-                import anthropic
-
-                self.client = anthropic.Anthropic(
-                    api_key=api_key, base_url=self.base_url
-                )
-        except ImportError:
-            # SDK 未安装或导入失败：回退到 requests
-            self.requests = self._import_requests()
-        except Exception:
-            # 其他初始化错误：调试模式下打印堆栈，然后回退
-            if self.debug_output:
-                traceback.print_exc()
-            self.requests = self._import_requests()
-        else:
-            self.use_sdk = True
-
-    @staticmethod
-    def _normalize_provider_choice(provider: Optional[str]) -> str:
-        provider_choice = str(provider or "").strip().lower()
-        provider_choice = provider_choice.replace("-", "_").replace(" ", "_")
-        return provider_choice or "openai"
-
-    def _resolve_transport(self) -> str:
-        if self.provider_choice in (
-            "openai",
-            "openai_compat",
-            "openai_compatible",
-            "openai_claude",
-            "claude_openai",
-            "claude_relay",
-        ):
-            return "openai"
-        if self.provider_choice in ("anthropic", "anthropic_native", "claude_native"):
-            return "anthropic"
-
-        base_url_lower = self.base_url.lower()
-        if self.provider_choice == "auto" and "api.anthropic.com" in base_url_lower:
-            return "anthropic"
-
-        return "openai"
-
-    def _import_requests(self):
-        import requests
-
-        return requests
-
-    def _ensure_requests(self):
-        if not hasattr(self, "requests") or self.requests is None:
-            self.requests = self._import_requests()
-
-    def _request_via_http(self, user_prompt: str) -> str:
-        self._ensure_requests()
-
-        if self.provider == "anthropic":
-            headers = {
-                "x-api-key"        : self.api_key,
-                "anthropic-version": "2023-06-01",
-                "Content-Type"     : "application/json",
-            }
-            payload = {
-                "model"      : self.model,
-                "system"     : SYSTEM_PROMPT,
-                "messages"   : [{"role": "user", "content": user_prompt}],
-                "temperature": 0.3,
-                "max_tokens" : 1000,
-            }
-            resp = self.requests.post(
-                f"{self.base_url}/messages",
-                headers = headers,
-                json    = payload,
-                timeout = self.timeout,
-            )
-            resp.raise_for_status()
-            response_json  = resp.json()
-            content_blocks = response_json.get("content", [])
-            return "\n".join(
-                block.get("text", "")
-                for block in content_blocks
-                if isinstance(block, dict)
-            )
-
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type" : "application/json",
-        }
-        payload = {
-            "model"   : self.model,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": 0.3,
-        }
-        resp = self.requests.post(
-            f"{self.base_url}/chat/completions",
-            headers = headers,
-            json    = payload,
-            timeout = self.timeout,
-        )
-        resp.raise_for_status()
-        response_json = resp.json()
-        return response_json["choices"][0]["message"]["content"]
-
-    def _extract_json_candidates(self, text: str) -> List[str]:
-        candidates: List[str] = []
-        stripped = text.strip()
-
-        if stripped:
-            candidates.append(stripped)
-
-        fenced_matches = re.findall(
-            r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL | re.IGNORECASE
-        )
-        candidates.extend(fenced_matches)
-
-        for start in range(len(text)):
-            if text[start] != "{":
-                continue
-            depth = 0
-            for end in range(start, len(text)):
-                char = text[end]
-                if char == "{":
-                    depth += 1
-                elif char == "}":
-                    depth -= 1
-                    if depth == 0:
-                        candidates.append(text[start : end + 1])
-                        break
-
-        return candidates
-
-    def _sanitize_result(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        sanitized = dict(data)
-
-        for key in ("p", "i", "d"):
-            value = sanitized.get(key)
-            try:
-                numeric = float(value)  # type: ignore[arg-type]
-            except (TypeError, ValueError):
-                sanitized.pop(key, None)
-                continue
-
-            if not math.isfinite(numeric) or numeric < 0:
-                sanitized.pop(key, None)
-            else:
-                sanitized[key] = numeric
-
-        if "status" in sanitized:
-            status = str(sanitized["status"]).strip().upper()
-            sanitized["status"] = "DONE" if status == "DONE" else "TUNING"
-
-        if not sanitized.get("analysis_summary"):
-            sanitized["analysis_summary"] = str(
-                sanitized.get("analysis") or "未提供分析摘要"
-            )
-
-        if not sanitized.get("thought_process"):
-            sanitized["thought_process"] = str(
-                sanitized.get("analysis_summary") or "模型未提供详细推理"
-            )
-
-        if not sanitized.get("tuning_action"):
-            sanitized["tuning_action"] = "ADJUST_PID"
-
-        return sanitized
-
-    def _parse_json(self, text: str) -> Optional[Dict[str, Any]]:
-        for candidate in self._extract_json_candidates(text):
-            try:
-                return self._sanitize_result(json.loads(candidate))
-            except Exception:
-                pass
-        return None
-
-    def analyze(self, prompt_data: str, history_text: str) -> Optional[Dict[str, Any]]:
-        user_prompt = f"""
-{history_text}
-
-{prompt_data}
-
-请基于以上历史和当前数据，分析 PID 参数表现并给出优化建议。
-务必使用 JSON 格式返回，包含 thought_process 字段。
-"""
-        try:
-            content: str = ""
-            if self.use_sdk:
-                try:
-                    if self.provider == "openai":
-                        resp = self.client.chat.completions.create(  # type: ignore[union-attr]
-                            model    = self.model,
-                            messages = [
-                                {"role": "system", "content": SYSTEM_PROMPT},
-                                {"role": "user", "content": user_prompt},
-                            ],
-                            temperature = 0.3,
-                        )
-                        content = resp.choices[0].message.content or ""
-                    elif self.provider == "anthropic":
-                        resp = self.client.messages.create(  # type: ignore[union-attr]
-                            model       = self.model,
-                            system      = SYSTEM_PROMPT,
-                            messages    = [{"role": "user", "content": user_prompt}],
-                            temperature = 0.3,
-                            max_tokens  = 1000,
-                        )
-                        content = resp.content[0].text  # type: ignore[union-attr]
-                except Exception as sdk_error:
-                    print(f"[WARN] SDK 调用失败，尝试 HTTP 回退: {sdk_error}")
-                    content = self._request_via_http(user_prompt)
-            else:
-                content = self._request_via_http(user_prompt)
-
-            if self.debug_output:
-                print(f"\n[LLM 原始响应预览]\n{content[:500]}...\n")
-
-            parsed = self._parse_json(content)
-            if parsed:
-                return parsed
-
-            print("[WARN] LLM 响应未能解析为 JSON，已忽略本轮建议。")
-            return None
-
-        except Exception as e:
-            print(f"[ERROR] LLM 调用失败: {e}")
-            return None
-
-
-# ============================================================================
-# 串口通信类 (简化版)
+# 串口通信类 (将在 Phase 2 迁移至 hardware/bridge.py)
 # ============================================================================
 
 
@@ -701,56 +146,53 @@ def main():
     print("=" * 60)
 
     # 串口选择逻辑
-    global SERIAL_PORT
+    serial_port = CONFIG["SERIAL_PORT"]
     if len(sys.argv) > 1:
-        # 如果命令行提供了参数，优先使用命令行参数 (方便脚本调用)
-        # 例如: tuner.exe COM3
         if not sys.argv[1].startswith("-"):
-            SERIAL_PORT = sys.argv[1]
+            serial_port = sys.argv[1]
     else:
-        # 否则尝试交互式选择，如果配置文件里写了 "AUTO" 或空，则交互选择
-        # 如果配置文件里写了具体的 "COM3"，则使用配置
-        env_port = CONFIG.get("SERIAL_PORT")
-
-        if env_port and env_port.upper() != "AUTO":
-            print(f"[INFO] 使用配置端口: {env_port}")
+        if serial_port and serial_port.upper() != "AUTO":
+            print(f"[INFO] 使用配置端口: {serial_port}")
             use_env = input("是否使用该端口? (Y/n): ").strip().lower()
             if use_env == "n":
-                SERIAL_PORT = select_serial_port()
-            else:
-                SERIAL_PORT = env_port
+                serial_port = select_serial_port()
         else:
-            SERIAL_PORT = select_serial_port()
+            serial_port = select_serial_port()
 
-    if not SERIAL_PORT:
+    if not serial_port:
         print("[ERROR] 未指定串口，程序退出。")
         safe_pause()
         return
 
-    print(f"[INFO] 即将连接到: {SERIAL_PORT}")
+    print(f"[INFO] 即将连接到: {serial_port}")
 
     # 串口初始化
-    bridge = SerialBridge(SERIAL_PORT, BAUD_RATE)
+    bridge = SerialBridge(serial_port, CONFIG["BAUD_RATE"])
     if not bridge.connect():
-        print(f"[ERROR] 无法打开串口 {SERIAL_PORT}")
+        print(f"[ERROR] 无法打开串口 {serial_port}")
         safe_pause()
         return
 
     # LLM 初始化
-    tuner = LLMTuner(API_KEY, API_BASE_URL, MODEL_NAME, LLM_PROVIDER)
+    tuner = LLMTuner(
+        CONFIG["LLM_API_KEY"],
+        CONFIG["LLM_API_BASE_URL"],
+        CONFIG["LLM_MODEL_NAME"],
+        CONFIG["LLM_PROVIDER"],
+    )
 
     # 数据与历史
-    buffer = AdvancedDataBuffer(max_size=BUFFER_SIZE)
-    history = TuningHistory(max_history=5)
+    buffer            = AdvancedDataBuffer(max_size=CONFIG["BUFFER_SIZE"])
+    history           = TuningHistory(max_history=5)
     good_enough_rules = {
-        "avg_error_threshold"         : GOOD_ENOUGH_AVG_ERROR,
-        "steady_state_error_threshold": GOOD_ENOUGH_STEADY_STATE_ERROR,
-        "overshoot_threshold"         : GOOD_ENOUGH_OVERSHOOT,
+        "avg_error_threshold"         : CONFIG["GOOD_ENOUGH_AVG_ERROR"],
+        "steady_state_error_threshold": CONFIG["GOOD_ENOUGH_STEADY_STATE_ERROR"],
+        "overshoot_threshold"         : CONFIG["GOOD_ENOUGH_OVERSHOOT"],
     }
 
-    round_num = 0
+    round_num     = 0
     stable_rounds = 0
-    best_result = None
+    best_result   = None
 
     try:
         bridge.send_command("STATUS")  # 唤醒/检查状态
@@ -758,7 +200,7 @@ def main():
 
         print("[INFO] 开始采集数据...")
 
-        while round_num < MAX_TUNING_ROUNDS:
+        while round_num < CONFIG["MAX_TUNING_ROUNDS"]:
             line = bridge.read_line()
             if line:
                 data = bridge.parse_data(line)
@@ -817,7 +259,7 @@ def main():
                     else 0
                 )
 
-                if stable_rounds >= REQUIRED_STABLE_ROUNDS:
+                if stable_rounds >= CONFIG["REQUIRED_STABLE_ROUNDS"]:
                     print(
                         f"\n[SUCCESS] 系统已连续 {stable_rounds} 轮达到可用稳定状态，提前结束调参。"
                     )
@@ -862,7 +304,7 @@ def main():
 
                     if (
                         result.get("status") == "DONE"
-                        or metrics["avg_error"] < MIN_ERROR_THRESHOLD
+                        or metrics["avg_error"] < CONFIG["MIN_ERROR_THRESHOLD"]
                     ):
                         print("\n[SUCCESS] 调参完成！")
                         break

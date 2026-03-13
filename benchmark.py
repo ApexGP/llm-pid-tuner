@@ -17,7 +17,11 @@ import random
 import time
 from typing import Any, Dict, List
 
-import simulator  # 用于模拟加热系统和随机性
+import simulator  # Phase 1: HeatingSimulator / SETPOINT 仍在 simulator.py
+from core.config import CONFIG, initialize_runtime_config
+from core.buffer import AdvancedDataBuffer
+from core.history import TuningHistory
+from llm.client import LLMTuner
 from pid_safety import (
     DEFAULT_CONVERGENCE_RULES,
     apply_pid_guardrails,
@@ -27,7 +31,6 @@ from pid_safety import (
     pid_equals,
     should_rollback_to_best,
 )
-from tuner import AdvancedDataBuffer, CONFIG, LLMTuner, TuningHistory, initialize_runtime_config
 
 
 DEFAULT_CASES = ("baseline", "fallback", "llm")
@@ -63,9 +66,9 @@ def run_case(
     rnd_w = len(str(rounds))  # 轮次数字宽度，保证对齐
 
     for round_num in range(1, rounds + 1):
-        buffer = AdvancedDataBuffer(max_size=simulator.BUFFER_SIZE)
+        buffer             = AdvancedDataBuffer(max_size=CONFIG["BUFFER_SIZE"])
         buffer.current_pid = {"p": sim.kp, "i": sim.ki, "d": sim.kd}
-        buffer.setpoint = simulator.SETPOINT
+        buffer.setpoint    = simulator.SETPOINT
 
         while not buffer.is_full():
             sim.compute_pid()
@@ -208,7 +211,7 @@ def print_summary(results: List[Dict[str, Any]]):
 
 
 def main():
-    # 显式初始化调参运行时配置，而不是依赖 simulator 的导入副作用
+    # 显式初始化调参运行时配置
     initialize_runtime_config(verbose=False)
     parser = argparse.ArgumentParser(description="LLM PID 调参 benchmark")
     parser.add_argument(
