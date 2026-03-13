@@ -105,7 +105,7 @@ class ProviderResolutionTests(unittest.TestCase):
         self.assertEqual(tuner.provider, "anthropic")
         self.assertEqual(content, "ok")
         self.assertEqual(
-            fake_requests.calls[0]["url"], "https://api.anthropic.com/messages"
+            fake_requests.calls[0]["url"], "https://api.anthropic.com/v1/messages"
         )
         self.assertIn("x-api-key", fake_requests.calls[0]["headers"])
 

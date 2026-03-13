@@ -100,8 +100,12 @@ class LLMTuner:
                 "temperature": 0.3,
                 "max_tokens" : 1000,
             }
+            # Anthropic 原生接口端点为 /v1/messages，若 base_url 不以 /v1 结尾则补上
+            base_url = self.base_url.rstrip("/")
+            if not base_url.endswith("/v1"):
+                base_url = f"{base_url}/v1"
             resp = self.requests.post(
-                f"{self.base_url}/messages",
+                f"{base_url}/messages",
                 headers = headers,
                 json    = payload,
                 timeout = self.timeout,

@@ -9,7 +9,6 @@ tests/test_regression.py - 核心模块回归测试
 """
 
 import sys
-import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch

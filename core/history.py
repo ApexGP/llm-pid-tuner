@@ -5,7 +5,7 @@ core/history.py - 调参历史记录管理器
 """
 
 from collections import deque
-from typing import Dict
+from typing import Any, Dict
 
 
 class TuningHistory:
@@ -18,7 +18,7 @@ class TuningHistory:
         self,
         round_num: int,
         pid      : Dict[str, float],
-        metrics  : Dict[str, float],
+        metrics  : Dict[str, Any],
         analysis : str,
     ) -> None:
         record = {
