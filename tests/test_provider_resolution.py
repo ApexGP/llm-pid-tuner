@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from tuner import LLMTuner
+from llm.client import LLMTuner
 
 
 class FakeOpenAI:
@@ -24,7 +24,7 @@ class FakeAnthropic:
 
 class FakeResponse:
     def __init__(self, payload):
-        self.payload  = payload
+        self.payload = payload
 
     def raise_for_status(self):
         return None
@@ -62,7 +62,7 @@ class ProviderResolutionTests(unittest.TestCase):
         anthropic_module  = build_fake_module("anthropic", "Anthropic", FakeAnthropic)
         self.module_patch = patch.dict(
             sys.modules,
-            {"openai": openai_module, "anthropic": anthropic_module},
+            {"openai": openai_module, "anthropic": anthropic_module}
         )
         self.module_patch.start()
 
@@ -74,7 +74,7 @@ class ProviderResolutionTests(unittest.TestCase):
             "test-key",
             "https://relay.example.com/v1",
             "claude-3-5-sonnet",
-            "openai",
+            "openai"
         )
 
         self.assertEqual(tuner.provider, "openai")
@@ -96,7 +96,7 @@ class ProviderResolutionTests(unittest.TestCase):
             "test-key",
             "https://api.anthropic.com",
             "claude-3-5-sonnet",
-            "anthropic",
+            "anthropic"
         )
         fake_requests  = FakeRequests({"content": [{"text": "ok"}]})
         tuner.requests = fake_requests  # type: ignore[assignment]
@@ -130,7 +130,7 @@ class ProviderResolutionTests(unittest.TestCase):
         )
         self.assertEqual(
             fake_requests.calls[0]["headers"].get("Authorization"),
-            "Bearer test-key",
+            "Bearer test-key"
         )
 
 

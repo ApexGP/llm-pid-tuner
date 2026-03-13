@@ -6,32 +6,29 @@ simulator.py - 增强版 PID 调参模拟器 (PRO)
 ===============================================================================
 
 功能：
-1. 使用 tuner.py 中的增强逻辑 (History-Aware, CoT, Advanced Metrics)
-2. 运行 HeatingSimulator 物理模型
+1. 使用 core/llm 子包中的增强逻辑 (History-Aware, CoT, Advanced Metrics)
+2. 运行 HeatingSimulator 物理模型（将在 Phase 2 迁移至 simulation/model.py）
 3. 生成对比报告
 
 ===============================================================================
 """
 
+import random
 import time
 import sys
-import random
 
-# 导入增强版调参器组件
-try:
-    import tuner as _tuner_mod
-    from tuner import LLMTuner, AdvancedDataBuffer, TuningHistory, CONFIG
-    from pid_safety import (
-        apply_pid_guardrails,
-        build_fallback_suggestion,
-        is_good_enough,
-        maybe_update_best_result,
-        pid_equals,
-        should_rollback_to_best,
-    )
-except ImportError:
-    print("[ERROR] 找不到 tuner.py，请确保文件存在")
-    sys.exit(1)
+from core.config import CONFIG, initialize_runtime_config
+from core.buffer import AdvancedDataBuffer
+from core.history import TuningHistory
+from llm.client import LLMTuner
+from pid_safety import (
+    apply_pid_guardrails,
+    build_fallback_suggestion,
+    is_good_enough,
+    maybe_update_best_result,
+    pid_equals,
+    should_rollback_to_best,
+)
 
 
 def ensure_runtime_config(
@@ -46,9 +43,7 @@ def ensure_runtime_config(
 
     该函数可安全地多次调用。
     """
-    _tuner_mod.initialize_runtime_config(
-        create_if_missing=create_if_missing, verbose=verbose
-    )
+    initialize_runtime_config(create_if_missing=create_if_missing, verbose=verbose)
 
 
 # 导入时静默初始化，供 benchmark 等调用方使用
@@ -58,27 +53,12 @@ ensure_runtime_config(verbose=False)
 # 配置（从 config.json / 环境变量读取，优先级：环境变量 > config.json > 默认值）
 # ============================================================================
 
-API_BASE_URL = CONFIG["LLM_API_BASE_URL"]
-API_KEY      = CONFIG["LLM_API_KEY"]
-MODEL_NAME   = CONFIG["LLM_MODEL_NAME"]
-LLM_PROVIDER = CONFIG["LLM_PROVIDER"]
-
-BUFFER_SIZE       = CONFIG["BUFFER_SIZE"]
-MAX_ROUNDS        = CONFIG["MAX_TUNING_ROUNDS"]
-MIN_ERROR         = CONFIG["MIN_ERROR_THRESHOLD"]
-CONTROL_INTERVAL  = 0.2  # 仿真步长 (200ms)，固定物理参数，不走配置
-GOOD_ENOUGH_RULES = {
-    "avg_error_threshold"         : CONFIG["GOOD_ENOUGH_AVG_ERROR"],
-    "steady_state_error_threshold": CONFIG["GOOD_ENOUGH_STEADY_STATE_ERROR"],
-    "overshoot_threshold"         : CONFIG["GOOD_ENOUGH_OVERSHOOT"],
-}
-REQUIRED_STABLE_ROUNDS = CONFIG["REQUIRED_STABLE_ROUNDS"]
-
-SETPOINT     = 200.0  # 目标温度
-INITIAL_TEMP = 20.0   # 初始温度
+CONTROL_INTERVAL = 0.2    # 仿真步长 (200ms)，固定物理参数，不走配置
+SETPOINT         = 200.0  # 目标温度
+INITIAL_TEMP     = 20.0   # 初始温度
 
 # ============================================================================
-# 仿真模型 (内置)
+# 仿真模型（将在 Phase 2 迁移至 simulation/model.py）
 # ============================================================================
 
 
@@ -163,25 +143,36 @@ def run_simulation():
     print("=" * 60)
     print("  LLM PID Tuner PRO - 仿真测试")
     print("=" * 60)
-    print(f"目标: {SETPOINT}, 模型: {MODEL_NAME}")
+    print(f"目标: {SETPOINT}, 模型: {CONFIG['LLM_MODEL_NAME']}")
 
     # 初始化组件
-    sim = HeatingSimulator()
-    tuner = LLMTuner(API_KEY, API_BASE_URL, MODEL_NAME, LLM_PROVIDER)
-    buffer = AdvancedDataBuffer(max_size=BUFFER_SIZE)
+    sim   = HeatingSimulator()
+    tuner = LLMTuner(
+        CONFIG["LLM_API_KEY"],
+        CONFIG["LLM_API_BASE_URL"],
+        CONFIG["LLM_MODEL_NAME"],
+        CONFIG["LLM_PROVIDER"],
+    )
+    buffer  = AdvancedDataBuffer(max_size=CONFIG["BUFFER_SIZE"])
     history = TuningHistory(max_history=5)
 
-    round_num = 0
+    good_enough_rules = {
+        "avg_error_threshold"         : CONFIG["GOOD_ENOUGH_AVG_ERROR"],
+        "steady_state_error_threshold": CONFIG["GOOD_ENOUGH_STEADY_STATE_ERROR"],
+        "overshoot_threshold"         : CONFIG["GOOD_ENOUGH_OVERSHOOT"],
+    }
+
+    round_num     = 0
     stable_rounds = 0
-    best_result = None
-    start_time = time.time()
+    best_result   = None
+    start_time    = time.time()
 
     # 设置初始 PID 到 buffer
     buffer.current_pid = {"p": sim.kp, "i": sim.ki, "d": sim.kd}
-    buffer.setpoint = SETPOINT
+    buffer.setpoint    = SETPOINT
 
     try:
-        while round_num < MAX_ROUNDS:
+        while round_num < CONFIG["MAX_TUNING_ROUNDS"]:
             # 1. 运行仿真并采集数据
             sim_steps = 0
             print(f"\n[第 {round_num + 1} 轮] 数据采集中...", end="")
@@ -229,7 +220,7 @@ def run_simulation():
                     f"  [回滚] 当前表现劣于第 {best_result['round']} 轮最佳结果，"
                     f"恢复到 P={sim.kp:.4f}, I={sim.ki:.4f}, D={sim.kd:.4f}"
                 )
-                if is_good_enough(best_result["metrics"], GOOD_ENOUGH_RULES):
+                if is_good_enough(best_result["metrics"], good_enough_rules):
                     print("\n[SUCCESS] 已回滚到历史最佳且满足可用标准，提前结束调参。")
                     break
                 round_num += 1
@@ -237,14 +228,17 @@ def run_simulation():
                 continue
 
             stable_rounds = (
-                stable_rounds + 1 if is_good_enough(metrics, GOOD_ENOUGH_RULES) else 0
+                stable_rounds + 1 if is_good_enough(metrics, good_enough_rules) else 0
             )
 
             # 检查是否达标
-            if metrics["avg_error"] < MIN_ERROR and metrics["status"] == "STABLE":
+            if (
+                metrics["avg_error"] < CONFIG["MIN_ERROR_THRESHOLD"]
+                and metrics["status"] == "STABLE"
+            ):
                 print("\n[SUCCESS] 调参成功！系统已稳定。")
                 break
-            if stable_rounds >= REQUIRED_STABLE_ROUNDS:
+            if stable_rounds >= CONFIG["REQUIRED_STABLE_ROUNDS"]:
                 print(
                     f"\n[SUCCESS] 系统已连续 {stable_rounds} 轮达到可用稳定状态，提前结束调参。"
                 )
@@ -276,7 +270,7 @@ def run_simulation():
                 old_p, old_i, old_d = sim.kp, sim.ki, sim.kd
                 safe_pid, guardrail_notes = apply_pid_guardrails(
                     {"p": sim.kp, "i": sim.ki, "d": sim.kd},
-                    result,
+                    result
                 )
                 sim.set_pid(safe_pid["p"], safe_pid["i"], safe_pid["d"])
 
@@ -303,8 +297,6 @@ def run_simulation():
 
             # 清空缓冲，准备下一轮
             buffer.reset()
-
-            # 注意：不重置仿真器状态 (sim.reset())，因为我们要模拟连续调参过程
 
     except KeyboardInterrupt:
         print("\n用户中断")
