@@ -380,4 +380,4 @@ python system_id.py --file sample_step.csv
 
 ## License
 
-`MIT`
+`CC BY-NC-SA 4.0`
