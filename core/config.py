@@ -22,6 +22,10 @@ CONFIG: dict = {
     "LLM_API_BASE_URL"              : "https://api.openai.com/v1",
     "LLM_MODEL_NAME"                : "gpt-4",
     "LLM_PROVIDER"                  : "openai",
+    "HTTP_PROXY"                    : "",
+    "HTTPS_PROXY"                   : "",
+    "ALL_PROXY"                     : "",
+    "NO_PROXY"                      : "",
     "BUFFER_SIZE"                   : 100,
     "MIN_ERROR_THRESHOLD"           : 0.3,
     "MAX_TUNING_ROUNDS"             : 50,
@@ -34,6 +38,7 @@ CONFIG: dict = {
 }
 
 CONFIG_PATH = "config.json"
+PROXY_KEYS = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
 
 
 def _parse_env_value(default_value: Any, raw_value: str) -> Any:
@@ -84,8 +89,22 @@ def load_config(create_if_missing: bool = True, verbose: bool = True) -> None:
                     print(f"[WARN] 环境变量 {key} 值无效，已忽略。")
 
 
+def _apply_proxy_env_from_config() -> None:
+    """将配置中的代理写入环境变量（仅在环境未显式设置时生效）。"""
+    for key in PROXY_KEYS:
+        value = CONFIG.get(key)
+        if not value:
+            continue
+        if not os.getenv(key):
+            os.environ[key] = str(value)
+        lower_key = key.lower()
+        if not os.getenv(lower_key):
+            os.environ[lower_key] = str(value)
+
+
 def initialize_runtime_config(
     create_if_missing: bool = True, verbose: bool = True
 ) -> None:
     """加载配置文件并更新 CONFIG。可安全地多次调用。"""
     load_config(create_if_missing=create_if_missing, verbose=verbose)
+    _apply_proxy_env_from_config()

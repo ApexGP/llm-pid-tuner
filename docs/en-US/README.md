@@ -140,6 +140,21 @@ In practice, this means the tool tries to be useful on real hardware, not just a
 
 Environment variables are also supported and override `config.json`, but beginners usually find `config.json` easier.
 
+### Proxy (optional)
+
+If you need a VPN/proxy, add these fields to `config.json`:
+
+```json
+{
+  "HTTP_PROXY": "http://127.0.0.1:7890",
+  "HTTPS_PROXY": "http://127.0.0.1:7890",
+  "ALL_PROXY": "http://127.0.0.1:7890",
+  "NO_PROXY": ""
+}
+```
+
+Leave them empty to **disable proxy**. If you do not need a proxy, you can ignore these fields.
+
 ---
 
 ## Recommended providers
