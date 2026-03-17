@@ -1,4 +1,4 @@
-"""simulation package - 加热系统仿真模型"""
+"""simulation package - 加热系统仿真模型与 Simulink 桥接"""
 
 from sim.model import (
     HeatingSimulator,

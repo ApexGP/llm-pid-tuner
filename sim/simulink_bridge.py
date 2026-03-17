@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-sim/matlab_bridge.py - MATLAB/Simulink 仿真桥接层
+sim/simulink_bridge.py - Simulink 仿真桥接层
 
 通过 MATLAB Engine API for Python 与 Simulink 模型双向通信。
 返回数据格式与 sim/model.py 的 HeatingSimulator.get_data() 完全一致，
-保证上层调参逻辑（matlab_tuner.py）可零修改复用。
+保证上层调参逻辑可零修改复用。
 
 前置条件：
   - 已安装 MATLAB R2021b 或更高版本
@@ -20,6 +20,7 @@ sim/matlab_bridge.py - MATLAB/Simulink 仿真桥接层
 from __future__ import annotations
 
 import time
+import warnings
 from typing import Optional
 
 try:
@@ -29,9 +30,9 @@ except ImportError:
     _MATLAB_AVAILABLE = False
 
 
-class MatlabBridge:
+class SimulinkBridge:
     """
-    MATLAB/Simulink 仿真桥接层。
+    Simulink 仿真桥接层。
 
     Parameters
     ----------
@@ -50,15 +51,15 @@ class MatlabBridge:
 
     def __init__(
         self,
-        model_path: str,
-        setpoint: float,
+        model_path    : str,
+        setpoint      : float,
         pid_block_path: str,
-        output_signal: str,
-        sim_step_time: float = 10.0,
+        output_signal : str,
+        sim_step_time : float = 10.0,
     ) -> None:
         if not _MATLAB_AVAILABLE:
             raise ImportError(
-                "[MatlabBridge] 未找到 matlabengine 包。\n"
+                "[SimulinkBridge] 未找到 matlabengine 包。\n"
                 "请先安装 MATLAB Engine API for Python：\n"
                 "  cd <MATLAB_ROOT>/extern/engines/python\n"
                 "  python setup.py install\n"
@@ -76,10 +77,10 @@ class MatlabBridge:
         self.ki: float = 0.1
         self.kd: float = 0.05
 
-        self._eng: Optional[object] = None
-        self._model_name: str = ""
-        self._current_sim_time: float = 0.0
-        self._last_data: list[dict] = []
+        self._eng             : Optional[object] = None
+        self._model_name      : str              = ""
+        self._current_sim_time: float            = 0.0
+        self._last_data       : list[dict]       = []
 
     # ------------------------------------------------------------------
     # 生命周期
@@ -87,7 +88,7 @@ class MatlabBridge:
 
     def connect(self) -> None:
         """启动 MATLAB Engine 并加载 Simulink 模型。"""
-        print("[MATLAB] 正在启动 MATLAB Engine，请稍候...")
+        print("[Simulink] 正在启动 MATLAB Engine，请稍候...")
         self._eng = matlab.engine.start_matlab()
 
         # 提取模型名（不含路径和扩展名）
@@ -98,7 +99,7 @@ class MatlabBridge:
         # 将模型目录加入 MATLAB 路径并加载模型
         self._eng.addpath(model_dir, nargout=0)
         self._eng.load_system(self.model_path, nargout=0)
-        print(f"[MATLAB] 模型已加载: {self._model_name}")
+        print(f"[Simulink] 模型已加载: {self._model_name}")
 
         # 设置仿真模式为外部控制（逐步推进）
         self._eng.set_param(self._model_name, "SimulationMode", "normal", nargout=0)
@@ -109,11 +110,11 @@ class MatlabBridge:
         if self._eng is not None:
             try:
                 self._eng.close_system(self._model_name, nargout=0)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[WARN] 关闭 Simulink 模型时出错: {e}")
             self._eng.quit()
             self._eng = None
-            print("[MATLAB] Engine 已关闭。")
+            print("[Simulink] Engine 已关闭。")
 
     # ------------------------------------------------------------------
     # PID 参数写入
@@ -143,6 +144,11 @@ class MatlabBridge:
         每次调用后 _last_data 存放本轮采样点列表，
         调用方通过 get_data() 逐条取出。
         """
+        if self._eng is None:
+            raise RuntimeError(
+                "[SimulinkBridge] 未连接 MATLAB Engine，请先调用 connect()。"
+            )
+
         next_time = self._current_sim_time + self.sim_step_time
 
         self._eng.set_param(
@@ -155,28 +161,54 @@ class MatlabBridge:
             nargout=0,
         )
 
-        # 等待仿真完成
-        status = ""
+        # 等待仿真完成（带超时，防止仿真卡死）
+        status        = ""
+        poll_interval = 0.05
+        timeout_sec   = max(60.0, self.sim_step_time * 3)
+        elapsed       = 0.0
         while status != "stopped" and status != "terminating":
+            if elapsed >= timeout_sec:
+                raise RuntimeError(
+                    f"[SimulinkBridge] 仿真超时（{timeout_sec:.0f}s），"
+                    "Simulink 可能卡住，请检查模型配置。"
+                )
             status = str(
                 self._eng.get_param(self._model_name, "SimulationStatus")
             )
-            time.sleep(0.05)
+            time.sleep(poll_interval)
+            elapsed += poll_interval
 
         # 从工作区读取输出信号（To Workspace，格式 Array）
-        raw_output = self._eng.workspace[self.output_signal]  # type: ignore
+        try:
+            raw_output = self._eng.workspace[self.output_signal]  # type: ignore
+        except (KeyError, AttributeError) as e:
+            raise RuntimeError(
+                f"[SimulinkBridge] 无法读取输出信号 '{self.output_signal}'：{e}。"
+                "请检查 MATLAB_OUTPUT_SIGNAL 配置及 Simulink To Workspace 变量名。"
+            ) from e
         # raw_output 是 matlab.double，转为 Python list
         output_values = list(raw_output)
 
         # 时间轴：MATLAB 默认将时间存为 tout
         try:
-            raw_time = self._eng.workspace["tout"]  # type: ignore
+            raw_time    = self._eng.workspace["tout"]  # type: ignore
             time_values = list(raw_time)
         except Exception:
             time_values = [
                 self._current_sim_time + i * (self.sim_step_time / max(len(output_values), 1))
                 for i in range(len(output_values))
             ]
+
+        if len(time_values) != len(output_values):
+            warnings.warn(
+                f"[SimulinkBridge] tout 与输出信号长度不一致 "
+                f"({len(time_values)} vs {len(output_values)})，将截断较长一方。",
+                UserWarning,
+                stacklevel=2,
+            )
+            min_len       = min(len(time_values), len(output_values))
+            time_values   = time_values[:min_len]
+            output_values = output_values[:min_len]
 
         self._current_sim_time = next_time
 

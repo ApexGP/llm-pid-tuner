@@ -8,7 +8,7 @@ simulator.py - 增强版 PID 调参模拟器 (PRO)
 功能：
 1. 使用 core/llm 子包中的增强逻辑 (History-Aware, CoT, Advanced Metrics)
 2. Python 仿真模式：运行 sim/model.py 中的 HeatingSimulator 物理模型
-3. MATLAB 仿真模式：通过 sim/matlab_bridge.py 驱动 Simulink 模型
+3. Simulink 仿真模式：通过 sim/simulink_bridge.py 驱动 Simulink 模型
    （当 config.json 中 MATLAB_MODEL_PATH 非空时自动启用）
 
 ===============================================================================
@@ -61,9 +61,12 @@ def _collect_data(sim, buffer: AdvancedDataBuffer) -> int:
 
     支持两种 adapter：
     - HeatingSimulator：每步调用 compute_pid() + update() + get_data() 返回单条
-    - MatlabBridge：每步调用 run_step() + get_data() 返回多条
+    - SimulinkBridge：每步调用 run_step() + get_data() 返回多条
     """
-    steps = 0
+    steps                  = 0
+    max_simulink_run_steps = 200  # 防止 get_data() 持续返回空导致死循环
+    simulink_run_count     = 0
+
     while not buffer.is_full():
         if hasattr(sim, "compute_pid"):
             # Python 仿真模式
@@ -72,7 +75,13 @@ def _collect_data(sim, buffer: AdvancedDataBuffer) -> int:
             buffer.add(sim.get_data())
             steps += 1
         else:
-            # MATLAB 模式
+            # Simulink 仿真模式
+            simulink_run_count += 1
+            if simulink_run_count > max_simulink_run_steps:
+                raise RuntimeError(
+                    f"[ERROR] Simulink 模式数据采集超时：已调用 run_step() {max_simulink_run_steps} 次 "
+                    f"仍未填满 buffer。请检查 MATLAB_OUTPUT_SIGNAL 配置及 Simulink 模型输出。"
+                )
             sim.run_step()
             for data in sim.get_data():
                 buffer.add(data)
@@ -83,7 +92,7 @@ def _collect_data(sim, buffer: AdvancedDataBuffer) -> int:
 
 
 def _run_tuning_loop(sim, setpoint: float, mode_label: str) -> None:
-    """通用调参主循环，对 HeatingSimulator 和 MatlabBridge 均适用。"""
+    """通用调参主循环，对 HeatingSimulator 和 SimulinkBridge 均适用。"""
     tuner = LLMTuner(
         CONFIG["LLM_API_KEY"],
         CONFIG["LLM_API_BASE_URL"],
@@ -241,17 +250,21 @@ def run_simulation():
     matlab_model_path = CONFIG.get("MATLAB_MODEL_PATH", "").strip()
 
     if matlab_model_path:
-        # ---- MATLAB/Simulink 仿真模式 ----
+        # ---- Simulink 仿真模式 ----
         try:
-            from sim.matlab_bridge import MatlabBridge
+            from sim.simulink_bridge import SimulinkBridge
         except ImportError as e:
             print(f"[ERROR] {e}")
             return
 
         pid_block_path = CONFIG.get("MATLAB_PID_BLOCK_PATH", "").strip()
         output_signal  = CONFIG.get("MATLAB_OUTPUT_SIGNAL", "").strip()
-        sim_step_time  = float(CONFIG.get("MATLAB_SIM_STEP_TIME", 10.0))
-        setpoint       = float(CONFIG.get("MATLAB_SETPOINT", 200.0))
+        try:
+            sim_step_time = float(CONFIG.get("MATLAB_SIM_STEP_TIME", 10.0))
+            setpoint      = float(CONFIG.get("MATLAB_SETPOINT", 200.0))
+        except (TypeError, ValueError) as e:
+            print(f"[ERROR] Simulink 配置数值解析失败: {e}，请检查 MATLAB_SIM_STEP_TIME 和 MATLAB_SETPOINT。")
+            return
 
         if not pid_block_path:
             print("[ERROR] 未配置 MATLAB_PID_BLOCK_PATH，请在 config.json 中填写 PID 模块路径。")
@@ -261,26 +274,26 @@ def run_simulation():
             return
 
         print("=" * 60)
-        print("  LLM PID Tuner PRO - MATLAB/Simulink 仿真模式")
+        print("  LLM PID Tuner PRO - Simulink 仿真模式")
         print("=" * 60)
         print(f"目标: {setpoint}, 模型: {CONFIG['LLM_MODEL_NAME']}")
         print(f"Simulink 模型: {matlab_model_path}")
 
-        sim = MatlabBridge(
-            model_path=matlab_model_path,
-            setpoint=setpoint,
-            pid_block_path=pid_block_path,
-            output_signal=output_signal,
-            sim_step_time=sim_step_time,
+        sim = SimulinkBridge(
+            model_path     = matlab_model_path,
+            setpoint       = setpoint,
+            pid_block_path = pid_block_path,
+            output_signal  = output_signal,
+            sim_step_time  = sim_step_time,
         )
         try:
             sim.connect()
         except Exception as e:
-            print(f"[ERROR] MATLAB 连接失败: {e}")
+            print(f"[ERROR] Simulink 连接失败: {e}")
             return
 
         try:
-            _run_tuning_loop(sim, setpoint, "MATLAB")
+            _run_tuning_loop(sim, setpoint, "Simulink")
         finally:
             sim.disconnect()
 

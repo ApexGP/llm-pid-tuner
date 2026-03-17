@@ -98,14 +98,21 @@ def load_config(create_if_missing: bool = True, verbose: bool = True) -> None:
 def _apply_proxy_env_from_config() -> None:
     """将配置中的代理写入环境变量（仅在环境未显式设置时生效）。"""
     for key in PROXY_KEYS:
-        value = CONFIG.get(key)
+        raw_value = CONFIG.get(key)
+        if raw_value is None:
+            continue
+        if not isinstance(raw_value, str):
+            if CONFIG.get("LLM_DEBUG_OUTPUT"):
+                print(f"[WARN] 代理配置 {key} 应为字符串，当前类型为 {type(raw_value).__name__}，已忽略。")
+            continue
+        value = raw_value.strip()
         if not value:
             continue
         if not os.getenv(key):
-            os.environ[key] = str(value)
+            os.environ[key] = value
         lower_key = key.lower()
         if not os.getenv(lower_key):
-            os.environ[lower_key] = str(value)
+            os.environ[lower_key] = value
 
 
 def initialize_runtime_config(
