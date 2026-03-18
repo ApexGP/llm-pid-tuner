@@ -274,7 +274,7 @@ class LLMTuner:
     def _execute_request(
         self, openai_msgs: List[Dict[str, Any]], anthropic_msgs: List[Dict[str, Any]]
     ) -> str:
-        print("  [LLM] 正在思考...")
+        print("  LLM 正在思考...")
         full_content = ""
         formatter = JSONStreamFormatter()
 

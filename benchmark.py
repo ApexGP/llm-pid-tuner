@@ -61,7 +61,7 @@ def run_case(
     best_result    = None
     records        : List[Dict[str, Any]] = []
     start_time     = time.time()
-    print(f"\n[{case_name}] 开始运行，最多 {rounds} 轮...")
+    print(f"\n{case_name.upper()} 开始运行，最多 {rounds} 轮...")
     rnd_w          = len(str(rounds))  # 轮次数字宽度，保证对齐
 
     for round_num in range(1, rounds + 1):
@@ -149,7 +149,7 @@ def run_case(
             break
 
     elapsed = time.time() - start_time
-    print(f"[{case_name}] 完成，共 {len(records)} 轮，耗时 {elapsed:.1f}s")
+    print(f"\n{case_name.upper()} 完成，共 {len(records)} 轮，耗时 {elapsed:.1f}s")
     final_metrics = records[-1]
 
     return {

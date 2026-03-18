@@ -7,6 +7,43 @@ core/config.py - 全局配置管理
 其他模块直接从本模块导入 CONFIG 和 initialize_runtime_config。
 """
 
+import sys
+
+
+def ensure_utf8_console():
+    """在 Windows 下强制设置控制台的输入输出编码为 UTF-8"""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            # 设置控制台输出代码页为 UTF-8 (65001)
+            ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+            # 同时也设置输入代码页，防止后续输入出问题
+            ctypes.windll.kernel32.SetConsoleCP(65001)
+        except Exception as e:
+            pass
+
+        # 强制重置 sys.stdout 为 UTF-8 (针对有些环境 stdout 已被锁死的情况)
+        if (
+            hasattr(sys.stdout, "encoding")
+            and sys.stdout.encoding
+            and sys.stdout.encoding.lower() != "utf-8"
+        ):
+            import io
+
+            try:
+                sys.stdout = io.TextIOWrapper(
+                    sys.stdout.buffer, encoding="utf-8", line_buffering=True
+                )
+                sys.stderr = io.TextIOWrapper(
+                    sys.stderr.buffer, encoding="utf-8", line_buffering=True
+                )
+            except AttributeError:
+                pass
+
+
+ensure_utf8_console()
+
 import json
 import os
 from typing import Any
@@ -103,7 +140,9 @@ def _apply_proxy_env_from_config() -> None:
             continue
         if not isinstance(raw_value, str):
             if CONFIG.get("LLM_DEBUG_OUTPUT"):
-                print(f"[WARN] 代理配置 {key} 应为字符串，当前类型为 {type(raw_value).__name__}，已忽略。")
+                print(
+                    f"[WARN] 代理配置 {key} 应为字符串，当前类型为 {type(raw_value).__name__}，已忽略。"
+                )
             continue
         value = raw_value.strip()
         if not value:
