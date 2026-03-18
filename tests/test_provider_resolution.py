@@ -26,6 +26,12 @@ class FakeResponse:
     def __init__(self, payload):
         self.payload = payload
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return None
+
     def raise_for_status(self):
         return None
 
@@ -125,6 +131,7 @@ class ProviderResolutionTests(unittest.TestCase):
             fake_requests.calls[0]["url"], "https://api.anthropic.com/v1/messages"
         )
         self.assertIn("x-api-key", fake_requests.calls[0]["headers"])
+        self.assertTrue(fake_requests.calls[0]["stream"], "HTTP 请求应使用 stream=True")
 
     def test_claude_openai_transport_uses_chat_completions_endpoint(self):
         tuner = LLMTuner(
@@ -152,6 +159,7 @@ class ProviderResolutionTests(unittest.TestCase):
             fake_requests.calls[0]["headers"].get("Authorization"),
             "Bearer test-key"
         )
+        self.assertTrue(fake_requests.calls[0]["stream"], "HTTP 请求应使用 stream=True")
 
 
 if __name__ == "__main__":

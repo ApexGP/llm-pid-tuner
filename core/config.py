@@ -23,26 +23,28 @@ def ensure_utf8_console():
         except Exception as e:
             pass
 
-        # 强制重置 sys.stdout 为 UTF-8 (针对有些环境 stdout 已被锁死的情况)
-        if (
-            hasattr(sys.stdout, "encoding")
-            and sys.stdout.encoding
-            and sys.stdout.encoding.lower() != "utf-8"
-        ):
-            import io
+        # 强制重置 stdout/stderr 为 UTF-8（分别检查，避免 stdout 已是 UTF-8 时漏掉 stderr）
+        import io
 
+        def _wrap_if_needed(stream):
+            if not hasattr(stream, "encoding") or not stream.encoding:
+                return
+            if stream.encoding.lower() == "utf-8":
+                return
             try:
-                sys.stdout = io.TextIOWrapper(
-                    sys.stdout.buffer, encoding="utf-8", line_buffering=True
-                )
-                sys.stderr = io.TextIOWrapper(
-                    sys.stderr.buffer, encoding="utf-8", line_buffering=True
+                return io.TextIOWrapper(
+                    stream.buffer, encoding="utf-8", line_buffering=True
                 )
             except AttributeError:
-                pass
+                return None
 
+        wrapped_stdout = _wrap_if_needed(sys.stdout)
+        if wrapped_stdout is not None:
+            sys.stdout = wrapped_stdout
+        wrapped_stderr = _wrap_if_needed(sys.stderr)
+        if wrapped_stderr is not None:
+            sys.stderr = wrapped_stderr
 
-ensure_utf8_console()
 
 import json
 import os
@@ -158,5 +160,6 @@ def initialize_runtime_config(
     create_if_missing: bool = True, verbose: bool = True
 ) -> None:
     """加载配置文件并更新 CONFIG。可安全地多次调用。"""
+    ensure_utf8_console()
     load_config(create_if_missing=create_if_missing, verbose=verbose)
     _apply_proxy_env_from_config()

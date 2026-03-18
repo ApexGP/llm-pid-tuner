@@ -26,9 +26,9 @@ class JSONStreamFormatter:
             "thought_process" : "\n  [思考]",
             "analysis_summary": "\n  [分析]",
             "tuning_action"   : "\n  [调参]",
-            "p"               : "\n  [建议参数] P",
-            "i"               : "I",
-            "d"               : "D",
+            "p"               : "\n  [建议] P",
+            "i"               : " I",
+            "d"               : " D",
             "status"          : "\n  [状态]",
         }
         # 预编译正则以提升性能
@@ -75,10 +75,10 @@ class JSONStreamFormatter:
             if key not in self.displayed_keys:
                 self.displayed_keys.add(key)
                 name = self.key_names.get(key, f"\n  [{key}]")
-                if key in ["i", "d", "status"]:
-                    print(f", {name}={val}", end="", flush=True)
-                elif key == "p":
-                    print(f"{name}={val}", end="", flush=True)
+                if key in ["p", "i", "d"]:
+                    print(f",{name}={val}", end="", flush=True)
+                elif key == "status":
+                    print(f"{name}: {val}", end="", flush=True)
                 else:
                     print(f"{name}: {val}", end="", flush=True)
 
@@ -163,6 +163,8 @@ class LLMTuner:
         for attempt in range(max_retries):
             try:
                 return func(*args, **kwargs)
+            except (KeyboardInterrupt, SystemExit):
+                raise
             except Exception as e:
                 last_exception = e
                 if attempt < max_retries - 1:
@@ -202,34 +204,34 @@ class LLMTuner:
             base_url = self.base_url.rstrip("/")
             if not base_url.endswith("/v1"):
                 base_url = f"{base_url}/v1"
-            resp = self.requests.post(
+            with self.requests.post(
                 f"{base_url}/messages",
                 headers = headers,
                 json    = payload,
                 timeout = self.timeout,
                 stream  = True,
-            )
-            resp.raise_for_status()
+            ) as resp:
+                resp.raise_for_status()
 
-            for line in resp.iter_lines():
-                if line:
-                    line_str = line.decode("utf-8")
-                    if line_str.startswith("data: "):
-                        data_str = line_str[6:]
-                        if data_str == "[DONE]":
-                            break
-                        try:
-                            data = json.loads(data_str)
-                            if (
-                                data.get("type") == "content_block_delta"
-                                and "delta" in data
-                            ):
-                                chunk = data["delta"].get("text", "")
-                                if chunk:
-                                    full_content += chunk
-                                    formatter.process(full_content)
-                        except json.JSONDecodeError:
-                            pass
+                for line in resp.iter_lines():
+                    if line:
+                        line_str = line.decode("utf-8")
+                        if line_str.startswith("data: "):
+                            data_str = line_str[6:]
+                            if data_str == "[DONE]":
+                                break
+                            try:
+                                data = json.loads(data_str)
+                                if (
+                                    data.get("type") == "content_block_delta"
+                                    and "delta" in data
+                                ):
+                                    chunk = data["delta"].get("text", "")
+                                    if chunk:
+                                        full_content += chunk
+                                        formatter.process(full_content)
+                            except json.JSONDecodeError:
+                                pass
 
         else:
             headers = {
@@ -242,32 +244,32 @@ class LLMTuner:
                 "temperature": 0.3,
                 "stream"     : True,
             }
-            resp = self.requests.post(
+            with self.requests.post(
                 f"{self.base_url}/chat/completions",
                 headers = headers,
                 json    = payload,
                 timeout = self.timeout,
                 stream  = True,
-            )
-            resp.raise_for_status()
+            ) as resp:
+                resp.raise_for_status()
 
-            for line in resp.iter_lines():
-                if line:
-                    line_str = line.decode("utf-8")
-                    if line_str.startswith("data: "):
-                        data_str = line_str[6:]
-                        if data_str == "[DONE]":
-                            break
-                        try:
-                            data = json.loads(data_str)
-                            choices = data.get("choices", [])
-                            if choices and "delta" in choices[0]:
-                                chunk = choices[0]["delta"].get("content", "")
-                                if chunk:
-                                    full_content += chunk
-                                    formatter.process(full_content)
-                        except json.JSONDecodeError:
-                            pass
+                for line in resp.iter_lines():
+                    if line:
+                        line_str = line.decode("utf-8")
+                        if line_str.startswith("data: "):
+                            data_str = line_str[6:]
+                            if data_str == "[DONE]":
+                                break
+                            try:
+                                data = json.loads(data_str)
+                                choices = data.get("choices", [])
+                                if choices and "delta" in choices[0]:
+                                    chunk = choices[0]["delta"].get("content", "")
+                                    if chunk:
+                                        full_content += chunk
+                                        formatter.process(full_content)
+                            except json.JSONDecodeError:
+                                pass
 
         return full_content
 

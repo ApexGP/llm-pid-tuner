@@ -8,6 +8,10 @@ from collections import deque
 from typing import Any, Dict
 
 
+# 每轮 thought/analysis 在 prompt 中的最大字符数，防止 prompt 膨胀
+_MAX_THOUGHT_ANALYSIS_LEN = 500
+
+
 class TuningHistory:
     """记录调参历史，用于 Prompt 上下文增强"""
 
@@ -46,8 +50,14 @@ class TuningHistory:
                 f"Overshoot={m.get('overshoot', 0):.1f}%, Status={m.get('status', 'UNKNOWN')}\n"
             )
             if rec.get("thought"):
-                text += f"- **AI思考过程**: {rec['thought']}\n"
+                t = rec["thought"]
+                if len(t) > _MAX_THOUGHT_ANALYSIS_LEN:
+                    t = t[:_MAX_THOUGHT_ANALYSIS_LEN].rstrip() + "..."
+                text += f"- **AI思考过程**: {t}\n"
             if rec.get("analysis"):
-                text += f"- **AI分析总结**: {rec['analysis']}\n"
+                a = rec["analysis"]
+                if len(a) > _MAX_THOUGHT_ANALYSIS_LEN:
+                    a = a[:_MAX_THOUGHT_ANALYSIS_LEN].rstrip() + "..."
+                text += f"- **AI分析总结**: {a}\n"
             text += "\n"
         return text
