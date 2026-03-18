@@ -7,6 +7,45 @@ core/config.py - 全局配置管理
 其他模块直接从本模块导入 CONFIG 和 initialize_runtime_config。
 """
 
+import sys
+
+
+def ensure_utf8_console():
+    """在 Windows 下强制设置控制台的输入输出编码为 UTF-8"""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            # 设置控制台输出代码页为 UTF-8 (65001)
+            ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+            # 同时也设置输入代码页，防止后续输入出问题
+            ctypes.windll.kernel32.SetConsoleCP(65001)
+        except Exception as e:
+            pass
+
+        # 强制重置 stdout/stderr 为 UTF-8（分别检查，避免 stdout 已是 UTF-8 时漏掉 stderr）
+        import io
+
+        def _wrap_if_needed(stream):
+            if not hasattr(stream, "encoding") or not stream.encoding:
+                return
+            if stream.encoding.lower() == "utf-8":
+                return
+            try:
+                return io.TextIOWrapper(
+                    stream.buffer, encoding="utf-8", line_buffering=True
+                )
+            except AttributeError:
+                return None
+
+        wrapped_stdout = _wrap_if_needed(sys.stdout)
+        if wrapped_stdout is not None:
+            sys.stdout = wrapped_stdout
+        wrapped_stderr = _wrap_if_needed(sys.stderr)
+        if wrapped_stderr is not None:
+            sys.stderr = wrapped_stderr
+
+
 import json
 import os
 from typing import Any
@@ -103,7 +142,9 @@ def _apply_proxy_env_from_config() -> None:
             continue
         if not isinstance(raw_value, str):
             if CONFIG.get("LLM_DEBUG_OUTPUT"):
-                print(f"[WARN] 代理配置 {key} 应为字符串，当前类型为 {type(raw_value).__name__}，已忽略。")
+                print(
+                    f"[WARN] 代理配置 {key} 应为字符串，当前类型为 {type(raw_value).__name__}，已忽略。"
+                )
             continue
         value = raw_value.strip()
         if not value:
@@ -119,5 +160,6 @@ def initialize_runtime_config(
     create_if_missing: bool = True, verbose: bool = True
 ) -> None:
     """加载配置文件并更新 CONFIG。可安全地多次调用。"""
+    ensure_utf8_console()
     load_config(create_if_missing=create_if_missing, verbose=verbose)
     _apply_proxy_env_from_config()

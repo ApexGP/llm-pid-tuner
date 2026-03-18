@@ -61,7 +61,7 @@ def run_case(
     best_result    = None
     records        : List[Dict[str, Any]] = []
     start_time     = time.time()
-    print(f"\n[{case_name}] 开始运行，最多 {rounds} 轮...")
+    print(f"\n{case_name.upper()} 开始运行，最多 {rounds} 轮...")
     rnd_w          = len(str(rounds))  # 轮次数字宽度，保证对齐
 
     for round_num in range(1, rounds + 1):
@@ -76,7 +76,7 @@ def run_case(
 
         metrics = buffer.calculate_advanced_metrics()
         print(
-            f"  [{case_name}] 第 {round_num:{rnd_w}}/{rounds} 轮: "
+            f"\n  [{case_name}] 第 {round_num:{rnd_w}}/{rounds} 轮: "
             f"AvgErr={metrics['avg_error']:>7.3f}  "
             f"Steady={metrics['steady_state_error']:>7.3f}  "
             f"Overshoot={metrics['overshoot']:>6.2f}%  "
@@ -128,8 +128,9 @@ def run_case(
             if not result:
                 result = build_fallback_suggestion(buffer.current_pid, metrics)
                 print(" 超时/失败，使用兜底策略")
-            else:
-                print(f" {result.get('tuning_action', '?')}")
+            # 流式输出中已经打印了完整的分析结果和调参动作，无需再次打印
+            # else:
+            #     print(f" {result.get('tuning_action', '?')}")
 
         if result.get("fallback_used"):
             fallback_count += 1
@@ -137,14 +138,18 @@ def run_case(
         safe_pid, _ = apply_pid_guardrails(buffer.current_pid, result)
         sim.set_pid(safe_pid["p"], safe_pid["i"], safe_pid["d"])
         history.add_record(
-            round_num, safe_pid, metrics, result.get("analysis_summary", "")
+            round_num,
+            safe_pid,
+            metrics,
+            result.get("analysis_summary", ""),
+            result.get("thought_process", ""),
         )
 
         if stop_on_done and result.get("status") == "DONE":
             break
 
     elapsed = time.time() - start_time
-    print(f"[{case_name}] 完成，共 {len(records)} 轮，耗时 {elapsed:.1f}s")
+    print(f"\n{case_name.upper()} 完成，共 {len(records)} 轮，耗时 {elapsed:.1f}s")
     final_metrics = records[-1]
 
     return {
