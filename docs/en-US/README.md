@@ -191,7 +191,31 @@ pip install -r requirements.txt
 python simulator.py
 ```
 
-`simulator.py` models a heating system locally and lets the LLM tune it. This is the easiest way to understand the project before touching real hardware.
+`simulator.py` models a simple local heating system and opens a lightweight Textual terminal dashboard by default when run in an interactive terminal.
+
+Before the tuning loop starts, it now does two beginner-friendly things automatically:
+
+- runs a quick doctor check for config, API reachability, serial ports, expected protocol fields, and proxy settings
+- runs a short system-identification warm start so the initial PID is better than the fixed default values
+
+- Press `q` to quit the dashboard
+- Press `p` to pause or resume the simulation loop
+- Press `l` to toggle concise vs detailed event logs
+- Press `r` to clear the event log and temporary summary
+
+If you prefer the old plain log output, run:
+
+```bash
+python simulator.py --plain
+```
+
+If the current terminal is non-interactive, or if `textual` is not installed yet, the simulator falls back to plain console logs automatically.
+
+If you want to run the startup checks manually without launching the simulator, use:
+
+```bash
+python doctor.py
+```
 
 ---
 
@@ -207,6 +231,8 @@ python tuner.py
 Optional tools:
 
 - `python simulator.py`
+- `python simulator.py --plain`
+- `python doctor.py`
 - `python system_id.py --file sample_step.csv`
 - `python benchmark.py --cases baseline fallback llm --rounds 8`
 

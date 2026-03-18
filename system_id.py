@@ -240,6 +240,26 @@ def system_identify(
     }
 
 
+def extract_initial_pid(result: Dict, pid_type: str = "PID") -> Optional[Dict[str, float]]:
+    """Extract a parallel-form PID suggestion from a system identification result."""
+    if not result or "error" in result:
+        return None
+
+    tuning_table = result.get("ziegler_nichols", {})
+    candidate = tuning_table.get(pid_type.upper())
+    if not isinstance(candidate, dict) or "error" in candidate:
+        return None
+
+    try:
+        return {
+            "p": float(candidate.get("Kp", 0.0)),
+            "i": float(candidate.get("Ki", 0.0)),
+            "d": float(candidate.get("Kd", 0.0)),
+        }
+    except (TypeError, ValueError):
+        return None
+
+
 def print_report(result: Dict):
     """打印分析报告"""
     if "error" in result:
