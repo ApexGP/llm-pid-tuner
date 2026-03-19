@@ -20,7 +20,6 @@ sim/simulink_bridge.py - Simulink 仿真桥接层
 from __future__ import annotations
 
 import time
-import warnings
 from typing import Optional
 
 try:
@@ -105,11 +104,25 @@ class SimulinkBridge:
         self._eng.set_param(self._model_name, "SimulationMode", "normal", nargout=0)
         self._current_sim_time = 0.0
 
+        # 从 Simulink PID 块读取当前参数作为初始值
+        try:
+            self.kp = float(self._eng.get_param(self.pid_block_path, "P", nargout=1))
+            self.ki = float(self._eng.get_param(self.pid_block_path, "I", nargout=1))
+            self.kd = float(self._eng.get_param(self.pid_block_path, "D", nargout=1))
+            print(f"[Simulink] 读取初始 PID: P={self.kp}, I={self.ki}, D={self.kd}")
+        except Exception:
+            print(f"[Simulink] 无法读取 PID 初始值，使用默认值 P={self.kp}, I={self.ki}, D={self.kd}")
+
     def disconnect(self) -> None:
         """关闭 Simulink 模型并退出 MATLAB Engine。"""
         if self._eng is not None:
             try:
-                self._eng.close_system(self._model_name, nargout=0)
+                self._eng.save_system(self._model_name, self.model_path, nargout=0)
+                print(f"[Simulink] 模型已保存: {self.model_path}")
+            except Exception as e:
+                print(f"[WARN] 保存 Simulink 模型时出错: {e}")
+            try:
+                self._eng.close_system(self._model_name, 0, nargout=0)
             except Exception as e:
                 print(f"[WARN] 关闭 Simulink 模型时出错: {e}")
             self._eng.quit()
@@ -149,85 +162,38 @@ class SimulinkBridge:
                 "[SimulinkBridge] 未连接 MATLAB Engine，请先调用 connect()。"
             )
 
-        next_time = self._current_sim_time + self.sim_step_time
+        # 用 sim() 同步运行，每轮从 0 开始仿真到 sim_step_time
+        self._eng.set_param(self._model_name, "StopTime", str(self.sim_step_time), nargout=0)
+        sim_out = self._eng.sim(self._model_name, nargout=1)
 
-        self._eng.set_param(
-            self._model_name, "StopTime", str(next_time), nargout=0
-        )
-        self._eng.set_param(
-            self._model_name,
-            "SimulationCommand",
-            "start" if self._current_sim_time == 0.0 else "continue",
-            nargout=0,
-        )
-
-        # 等待仿真完成（带超时，防止仿真卡死）
-        status        = ""
-        poll_interval = 0.05
-        timeout_sec   = max(60.0, self.sim_step_time * 3)
-        elapsed       = 0.0
-        while status != "stopped" and status != "terminating":
-            if elapsed >= timeout_sec:
-                raise RuntimeError(
-                    f"[SimulinkBridge] 仿真超时（{timeout_sec:.0f}s），"
-                    "Simulink 可能卡住，请检查模型配置。"
-                )
-            status = str(
-                self._eng.get_param(self._model_name, "SimulationStatus")
-            )
-            time.sleep(poll_interval)
-            elapsed += poll_interval
-
-        # 从工作区读取输出信号（To Workspace，格式 Array）
+        # 从 sim() 返回的对象中读取 Timeseries 格式的输出信号
         try:
-            raw_output = self._eng.workspace[self.output_signal]  # type: ignore
-        except (KeyError, AttributeError) as e:
+            ts = self._eng.getfield(sim_out, self.output_signal, nargout=1)
+            raw_time   = self._eng.getfield(ts, 'Time', nargout=1)
+            raw_output = self._eng.getfield(ts, 'Data', nargout=1)
+            time_values   = [float(list(v)[0]) if hasattr(v, '__iter__') else float(v) for v in raw_time]
+            output_values = [float(list(v)[0]) if hasattr(v, '__iter__') else float(v) for v in raw_output]
+        except Exception as e:
             raise RuntimeError(
                 f"[SimulinkBridge] 无法读取输出信号 '{self.output_signal}'：{e}。"
                 "请检查 MATLAB_OUTPUT_SIGNAL 配置及 Simulink To Workspace 变量名。"
             ) from e
-        # raw_output 是 matlab.double，转为 Python list
-        output_values = list(raw_output)
 
-        # 时间轴：MATLAB 默认将时间存为 tout
-        try:
-            raw_time    = self._eng.workspace["tout"]  # type: ignore
-            time_values = list(raw_time)
-        except Exception:
-            time_values = [
-                self._current_sim_time + i * (self.sim_step_time / max(len(output_values), 1))
-                for i in range(len(output_values))
-            ]
-
-        if len(time_values) != len(output_values):
-            warnings.warn(
-                f"[SimulinkBridge] tout 与输出信号长度不一致 "
-                f"({len(time_values)} vs {len(output_values)})，将截断较长一方。",
-                UserWarning,
-                stacklevel=2,
-            )
-            min_len       = min(len(time_values), len(output_values))
-            time_values   = time_values[:min_len]
-            output_values = output_values[:min_len]
-
-        self._current_sim_time = next_time
-
-        # 只取本轮新增的数据点（截取最后 sim_step_time 时间段内的点）
-        step_start = next_time - self.sim_step_time
+        # 每轮独立仿真，取全部数据点
+        self._current_sim_time = self.sim_step_time
         self._last_data = []
         for t, y in zip(time_values, output_values):
-            if float(t) >= step_start:
-                error = self.setpoint - float(y)
-                self._last_data.append({
-                    "timestamp" : float(t) * 1000.0,  # 转为 ms 与其他模式一致
-                    "setpoint"  : self.setpoint,
-                    "input"     : float(y),
-                    "pwm"       : 0.0,  # Simulink 模型一般不暴露控制量，填 0
-                    "error"     : error,
-                    "p"         : self.kp,
-                    "i"         : self.ki,
-                    "d"         : self.kd,
-                })
+            error = self.setpoint - float(y)
+            self._last_data.append({
+                "timestamp" : float(t) * 1000.0,  # 转为 ms 与其他模式一致
+                "setpoint"  : self.setpoint,
+                "input"     : float(y),
+                "pwm"       : 0.0,  # Simulink 模型一般不暴露控制量，填 0
+                "error"     : error,
+                "p"         : self.kp,
+                "i"         : self.ki,
+                "d"         : self.kd,
+            })
 
     def get_data(self) -> list[dict]:
         """

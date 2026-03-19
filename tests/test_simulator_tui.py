@@ -115,12 +115,21 @@ class SimulatorLoopTests(unittest.TestCase):
         event_queue = Queue()
         event_sink = QueueEventSink(event_queue)
         controller = SimulationController()
+        captured = {}
 
         class FakeTuner:
             def __init__(self, *_args, **_kwargs):
                 pass
 
-            def analyze(self, _prompt_data, _history_text):
+            def analyze(
+                self,
+                _prompt_data,
+                _history_text,
+                tuning_mode="generic",
+                prompt_context=None,
+            ):
+                captured["tuning_mode"] = tuning_mode
+                captured["prompt_context"] = prompt_context
                 return {
                     "analysis_summary": "Stop after one round.",
                     "tuning_action": "HOLD",
@@ -152,6 +161,75 @@ class SimulatorLoopTests(unittest.TestCase):
         self.assertIn(EVENT_DECISION, event_types)
         self.assertIn(EVENT_LIFECYCLE, event_types)
         self.assertGreaterEqual(result["rounds_completed"], 1)
+        self.assertEqual(captured["tuning_mode"], "python_sim")
+        self.assertEqual(
+            captured["prompt_context"]["source"],
+            "built_in_python_heating_simulator",
+        )
+
+    def test_run_simulink_simulation_passes_special_prompt_context(self):
+        captured = {}
+
+        class FakeBridge:
+            def __init__(
+                self,
+                model_path,
+                setpoint,
+                pid_block_path,
+                output_signal,
+                sim_step_time,
+            ):
+                self.model_path = model_path
+                self.setpoint = setpoint
+                self.pid_block_path = pid_block_path
+                self.output_signal = output_signal
+                self.sim_step_time = sim_step_time
+                self.kp = 1.0
+                self.ki = 0.1
+                self.kd = 0.05
+
+            def connect(self):
+                return None
+
+            def disconnect(self):
+                return None
+
+        def fake_run_tuning_loop(
+            sim,
+            setpoint,
+            mode_label,
+            llm_mode="generic",
+            prompt_context=None,
+            **_kwargs,
+        ):
+            captured["sim"] = sim
+            captured["setpoint"] = setpoint
+            captured["mode_label"] = mode_label
+            captured["llm_mode"] = llm_mode
+            captured["prompt_context"] = prompt_context
+            return {"mode": "simulink"}
+
+        with patch("sim.simulink_bridge.SimulinkBridge", FakeBridge):
+            with patch.object(simulator, "_run_tuning_loop", side_effect=fake_run_tuning_loop):
+                with patch.dict(
+                    simulator.CONFIG,
+                    {
+                        "MATLAB_MODEL_PATH": "C:/models/demo.slx",
+                        "MATLAB_PID_BLOCK_PATH": "demo/PID Controller",
+                        "MATLAB_OUTPUT_SIGNAL": "y_out",
+                        "MATLAB_SIM_STEP_TIME": 12.5,
+                        "MATLAB_SETPOINT": 180.0,
+                    },
+                    clear=False,
+                ):
+                    result = simulator._run_simulink_simulation()
+
+        self.assertEqual(result, {"mode": "simulink"})
+        self.assertEqual(captured["mode_label"], "Simulink")
+        self.assertEqual(captured["llm_mode"], "simulink")
+        self.assertEqual(captured["prompt_context"]["model_path"], "C:/models/demo.slx")
+        self.assertFalse(captured["prompt_context"]["pwm_signal_available"])
+        self.assertIn("placeholder 0.0", captured["prompt_context"]["pwm_field_note"])
 
 
 class TuiModeTests(unittest.TestCase):

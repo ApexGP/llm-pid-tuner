@@ -32,6 +32,7 @@ class HardwareTuiLoopTests(unittest.TestCase):
         event_sink = QueueEventSink(event_queue)
         controller = SimulationController()
         sent_commands: list[str] = []
+        captured = {}
 
         class FakeBridge:
             def __init__(self, _port, _baudrate, emit_console=True):
@@ -83,7 +84,15 @@ class HardwareTuiLoopTests(unittest.TestCase):
                 self.log_callback = log_callback
                 self.emit_console = emit_console
 
-            def analyze(self, _prompt_data, _history_text):
+            def analyze(
+                self,
+                _prompt_data,
+                _history_text,
+                tuning_mode="generic",
+                prompt_context=None,
+            ):
+                captured["tuning_mode"] = tuning_mode
+                captured["prompt_context"] = prompt_context
                 if self.log_callback:
                     self.log_callback("llm", "  LLM 正在思考...")
                 if self.stream_callback:
@@ -122,6 +131,8 @@ class HardwareTuiLoopTests(unittest.TestCase):
         self.assertGreaterEqual(result["rounds_completed"], 1)
         self.assertTrue(any(event.get("label") == "llm_stream" for event in events))
         self.assertTrue(any(cmd.startswith("SET P:") for cmd in sent_commands))
+        self.assertEqual(captured["tuning_mode"], "hardware")
+        self.assertEqual(captured["prompt_context"]["serial_port"], "COM9")
 
     def test_hardware_connection_failure_reports_error_result(self):
         event_queue = Queue()

@@ -19,6 +19,7 @@ from core.tuning_session import (
     create_tuning_session,
     evaluate_completed_round,
     finalize_decision,
+    record_rollback_round,
 )
 from doctor import collect_doctor_checks, print_doctor_report, summarize_doctor_checks
 from llm.client import LLMTuner
@@ -39,13 +40,7 @@ from sim.runtime import (
 from system_id import extract_initial_pid, system_identify
 
 
-def ensure_runtime_config(
-    verbose: bool = False, create_if_missing: bool = True
-) -> None:
-    initialize_runtime_config(create_if_missing=create_if_missing, verbose=verbose)
-
-
-ensure_runtime_config(verbose=False, create_if_missing=False)
+initialize_runtime_config(create_if_missing=False, verbose=False)
 
 
 def choose_tui_language(default: str = "zh") -> str:
@@ -233,16 +228,96 @@ def _collect_data(
     return steps, True
 
 
+def _build_python_sim_prompt_context() -> dict[str, Any]:
+    return {
+        "source": "built_in_python_heating_simulator",
+        "plant_family": "single_loop_thermal",
+        "controller_output_signal": "PWM",
+        "pwm_signal_available": True,
+        "tuning_style": "simulation_can_move_faster_than_hardware",
+        "per_round_guardrail_hint": "仿真环境，可适度加大调整幅度，每轮 P 值可调整至当前值的3倍以内，I/D 可调整至当前值的4倍以内。",
+    }
+
+
+def _build_simulink_prompt_context(
+    model_path: str,
+    pid_block_path: str,
+    output_signal: str,
+    sim_step_time: float,
+) -> dict[str, Any]:
+    return {
+        "source": "matlab_simulink",
+        "model_path": model_path,
+        "pid_block_path": pid_block_path,
+        "output_signal": output_signal,
+        "sim_step_time_sec": sim_step_time,
+        "pwm_signal_available": False,
+        "per_round_guardrail_hint": "仿真环境安全，可以大胆调整参数，每轮 P 值可调整至当前值的5倍以内，I/D 可调整至当前值的6倍以内。",
+        "pwm_field_note": (
+            "The current Simulink bridge fills PWM with a placeholder 0.0. "
+            "Do not treat zero PWM samples as real actuator saturation evidence."
+        ),
+    }
+
+
+def _resolve_llm_mode(mode_label: str, llm_mode: str) -> str:
+    if llm_mode != "generic":
+        return llm_mode
+
+    normalized = mode_label.strip().lower()
+    if normalized == "python":
+        return "python_sim"
+    if normalized == "simulink":
+        return "simulink"
+    if normalized == "hardware":
+        return "hardware"
+    return llm_mode
+
+
+def _default_prompt_context_for_mode(sim: Any, llm_mode: str) -> dict[str, Any] | None:
+    if llm_mode == "python_sim":
+        return _build_python_sim_prompt_context()
+
+    if llm_mode != "simulink":
+        return None
+
+    model_path = str(getattr(sim, "model_path", "") or "")
+    pid_block_path = str(getattr(sim, "pid_block_path", "") or "")
+    output_signal = str(getattr(sim, "output_signal", "") or "")
+    sim_step_time = getattr(sim, "sim_step_time", 0.0)
+    try:
+        sim_step_time_value = float(sim_step_time)
+    except (TypeError, ValueError):
+        sim_step_time_value = 0.0
+
+    if not model_path and not pid_block_path and not output_signal:
+        return None
+
+    return _build_simulink_prompt_context(
+        model_path,
+        pid_block_path,
+        output_signal,
+        sim_step_time_value,
+    )
+
+
 def _run_tuning_loop(
     sim: Any,
     setpoint: float,
     mode_label: str,
+    llm_mode: str = "generic",
+    prompt_context: dict[str, Any] | None = None,
     event_sink: QueueEventSink | None = None,
     controller: SimulationController | None = None,
     emit_console: bool = True,
     warm_start: bool = True,
     doctor_checks: list[Any] | None = None,
+    disable_early_exit: bool = False,
 ) -> dict[str, Any]:
+    llm_mode = _resolve_llm_mode(mode_label, llm_mode)
+    if prompt_context is None:
+        prompt_context = _default_prompt_context_for_mode(sim, llm_mode)
+
     tuner = LLMTuner(
         CONFIG["LLM_API_KEY"],
         CONFIG["LLM_API_BASE_URL"],
@@ -278,6 +353,9 @@ def _run_tuning_loop(
 
             round_index = session.round_num + 1
             _console(emit_console, f"\n[Round {round_index}] Collecting data...")
+            # Simulink 每轮独立仿真，需在采集前清空上轮缓冲数据
+            if hasattr(sim, 'run_step'):
+                session.buffer.reset()
             _emit_lifecycle(
                 event_sink,
                 start_time,
@@ -324,7 +402,14 @@ def _run_tuning_loop(
                     f"Captured a new best stable result at round {round_index}.",
                 )
 
-            if evaluation.rollback_pid:
+            if evaluation.rollback_pid and not disable_early_exit:
+                rollback_message = record_rollback_round(
+                    session,
+                    evaluation,
+                    evaluation.rollback_pid,
+                    target_round=int(evaluation.best_result["round"]) if evaluation.best_result else None,
+                )
+                _console(emit_console, f"[Rollback] {rollback_message}")
                 sim.set_pid(
                     evaluation.rollback_pid["p"],
                     evaluation.rollback_pid["i"],
@@ -337,9 +422,9 @@ def _run_tuning_loop(
                     round=round_index,
                     target_round=int(evaluation.best_result["round"]) if evaluation.best_result else round_index,
                     pid=dict(evaluation.rollback_pid),
-                    reason="Current metrics regressed against the best stable result.",
+                    reason=rollback_message,
                 )
-                if evaluation.completed_reason == "rollback_to_best":
+                if evaluation.completed_reason == "rollback_to_best" and not disable_early_exit:
                     session.completed_reason = "rollback_to_best"
                     _emit_lifecycle(
                         event_sink,
@@ -350,7 +435,7 @@ def _run_tuning_loop(
                     break
                 continue
 
-            if evaluation.completed_reason == "low_error_converged":
+            if evaluation.completed_reason == "low_error_converged" and not disable_early_exit:
                 session.completed_reason = "low_error_converged"
                 _emit_lifecycle(
                     event_sink,
@@ -360,7 +445,7 @@ def _run_tuning_loop(
                 )
                 break
 
-            if evaluation.completed_reason == "stable_rounds_reached":
+            if evaluation.completed_reason == "stable_rounds_reached" and not disable_early_exit:
                 session.completed_reason = "stable_rounds_reached"
                 _emit_lifecycle(
                     event_sink,
@@ -379,6 +464,8 @@ def _run_tuning_loop(
             result = tuner.analyze(
                 session.buffer.to_prompt_data(),
                 session.history.to_prompt_text(),
+                tuning_mode=llm_mode,
+                prompt_context=prompt_context,
             )
 
             if not result:
@@ -503,6 +590,8 @@ def _run_python_simulation_with_tui(
             sim,
             SETPOINT,
             "Python",
+            llm_mode="python_sim",
+            prompt_context=_build_python_sim_prompt_context(),
             event_sink=event_sink,
             controller=controller,
             emit_console=False,
@@ -534,6 +623,8 @@ def _run_python_simulation_plain(
         sim,
         SETPOINT,
         "Python",
+        llm_mode="python_sim",
+        prompt_context=_build_python_sim_prompt_context(),
         emit_console=True,
         warm_start=warm_start,
         doctor_checks=doctor_checks,
@@ -586,7 +677,20 @@ def _run_simulink_simulation() -> dict[str, Any] | None:
         return None
 
     try:
-        return _run_tuning_loop(sim, setpoint, "Simulink", emit_console=True)
+        return _run_tuning_loop(
+            sim,
+            setpoint,
+            "Simulink",
+            llm_mode="simulink",
+            prompt_context=_build_simulink_prompt_context(
+                matlab_model_path,
+                pid_block_path,
+                output_signal,
+                sim_step_time,
+            ),
+            emit_console=True,
+            disable_early_exit=True,
+        )
     finally:
         sim.disconnect()
 

@@ -133,6 +133,7 @@ def dispatch(
         return
     if choice == MODE_SIM:
         run_simulation(force_plain=False)
+        safe_pause("Press Enter to exit...")
         return
 
     safe_pause("Press Enter to exit...")

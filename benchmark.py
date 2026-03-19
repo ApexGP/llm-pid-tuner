@@ -124,7 +124,17 @@ def run_case(
                 end="",
                 flush=True,
             )
-            result = llm.analyze(buffer.to_prompt_data(), history.to_prompt_text())
+            result = llm.analyze(
+                buffer.to_prompt_data(),
+                history.to_prompt_text(),
+                tuning_mode="python_sim",
+                prompt_context={
+                    "source": "built_in_python_heating_simulator",
+                    "controller_output_signal": "PWM",
+                    "pwm_signal_available": True,
+                    "per_round_guardrail_hint": "Keep P within about 3x the current value, and keep I/D within about 4x unless there is overwhelming evidence.",
+                },
+            )
             if not result:
                 result = build_fallback_suggestion(buffer.current_pid, metrics)
                 print(" 超时/失败，使用兜底策略")

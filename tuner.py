@@ -26,6 +26,7 @@ from core.tuning_session import (
     create_tuning_session,
     evaluate_completed_round,
     finalize_decision,
+    record_rollback_round,
 )
 from hw.bridge import SerialBridge, safe_pause, select_serial_port
 from llm.client import LLMTuner
@@ -43,6 +44,17 @@ from sim.runtime import (
     publish_event,
     wait_while_paused,
 )
+
+
+def _build_hardware_prompt_context(serial_port: str) -> dict[str, Any]:
+    return {
+        "source": "serial_hardware",
+        "serial_port": serial_port,
+        "controller_output_signal": "PWM",
+        "pwm_signal_available": True,
+        "tuning_style": "conservative_hardware_safe",
+        "per_round_guardrail_hint": "Keep P within about 3x the current value, and keep I/D within about 4x. Prefer smaller moves near stability.",
+    }
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -307,6 +319,12 @@ def _run_hardware_tuning_loop(
                     f"当前表现劣于第 {evaluation.best_result['round']} 轮最佳结果，恢复到 "
                     f"P={evaluation.rollback_pid['p']}, I={evaluation.rollback_pid['i']}, D={evaluation.rollback_pid['d']}"
                 )
+                rollback_message = record_rollback_round(
+                    session,
+                    evaluation,
+                    evaluation.rollback_pid,
+                    target_round=int(evaluation.best_result["round"]) if evaluation.best_result else None,
+                )
                 _console(emit_console, f"[Rollback] {rollback_message}")
                 publish_event(
                     event_sink,
@@ -377,7 +395,12 @@ def _run_hardware_tuning_loop(
                 "llm_request",
                 f"Requesting PID suggestion for round {evaluation.round_index}.",
             )
-            result = tuner.analyze(prompt_data, history_text)
+            result = tuner.analyze(
+                prompt_data,
+                history_text,
+                tuning_mode="hardware",
+                prompt_context=_build_hardware_prompt_context(serial_port),
+            )
 
             if not result:
                 _console(emit_console, "[WARN] LLM 本轮不可用，启用保守兜底策略。")

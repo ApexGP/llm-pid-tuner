@@ -142,6 +142,34 @@ def apply_rollback(
     state.buffer.reset()
 
 
+def record_rollback_round(
+    state: TuningSessionState,
+    evaluation: RoundEvaluation,
+    rollback_pid: dict[str, float],
+    *,
+    target_round: int | None = None,
+) -> str:
+    target_label = f"round {target_round}" if target_round is not None else "the best stable round"
+    analysis = (
+        "Automatic rollback triggered because this round regressed against "
+        f"{target_label}. Reverted to "
+        f"P={rollback_pid['p']:.4f}, I={rollback_pid['i']:.4f}, D={rollback_pid['d']:.4f}."
+    )
+    thought = (
+        "This round was evaluated with "
+        f"P={evaluation.current_pid['p']:.4f}, I={evaluation.current_pid['i']:.4f}, D={evaluation.current_pid['d']:.4f}. "
+        "Its response was worse than the current best stable result, so the attempt was rejected."
+    )
+    state.history.add_record(
+        evaluation.round_index,
+        evaluation.current_pid,
+        evaluation.metrics,
+        analysis,
+        thought,
+    )
+    return analysis
+
+
 def finalize_decision(
     state: TuningSessionState,
     evaluation: RoundEvaluation,
@@ -163,7 +191,7 @@ def finalize_decision(
 
     state.history.add_record(
         evaluation.round_index,
-        safe_pid,
+        evaluation.current_pid,
         evaluation.metrics,
         analysis,
         thought,

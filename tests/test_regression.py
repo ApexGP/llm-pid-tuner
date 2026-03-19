@@ -9,7 +9,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import simulator
 from core.buffer import AdvancedDataBuffer
 from core.config import CONFIG, load_config
+from core.tuning_session import (
+    RoundEvaluation,
+    create_tuning_session,
+    finalize_decision,
+    record_rollback_round,
+)
 from llm.client import LLMTuner
+from llm.prompts import build_user_prompt, get_system_prompt, normalize_tuning_mode
 from sim.model import CONTROL_INTERVAL, INITIAL_TEMP, SETPOINT, HeatingSimulator
 
 
@@ -114,6 +121,94 @@ class LLMFallbackTests(unittest.TestCase):
 
         self.assertEqual(result, '{"status":"DONE"}')
         self.assertEqual(done_updates.count(True), 1)
+
+
+class PromptSelectionTests(unittest.TestCase):
+    def test_normalize_tuning_mode_maps_known_aliases(self):
+        self.assertEqual(normalize_tuning_mode("python"), "python_sim")
+        self.assertEqual(normalize_tuning_mode("simulink"), "simulink")
+        self.assertEqual(normalize_tuning_mode("serial"), "hardware")
+
+    def test_simulink_system_prompt_mentions_placeholder_pwm(self):
+        prompt = get_system_prompt("simulink")
+        self.assertIn("Simulink", prompt)
+        self.assertIn("PWM", prompt)
+        self.assertIn("0.0", prompt)
+
+    def test_user_prompt_includes_mode_context(self):
+        prompt = build_user_prompt(
+            "## Current Status\n- Current PID: P=1.0, I=0.1, D=0.05",
+            "No tuning history yet.",
+            tuning_mode="hardware",
+            prompt_context={
+                "serial_port": "COM9",
+                "pwm_signal_available": True,
+            },
+        )
+
+        self.assertIn("hardware", prompt)
+        self.assertIn("serial port: COM9", prompt)
+        self.assertIn("pwm signal available", prompt)
+
+
+class TuningSessionHistoryTests(unittest.TestCase):
+    def test_finalize_decision_records_pid_that_generated_metrics(self):
+        state = create_tuning_session(
+            initial_pid={"p": 1.0, "i": 0.0, "d": 0.0},
+            setpoint=200.0,
+        )
+        evaluation = RoundEvaluation(
+            round_index=1,
+            metrics={"avg_error": 148.26, "steady_state_error": 130.41, "overshoot": 0.0, "status": "SLOW_RESPONSE"},
+            current_pid={"p": 1.0, "i": 0.0, "d": 0.0},
+            stable_rounds=0,
+        )
+
+        finalize_decision(
+            state,
+            evaluation,
+            {
+                "analysis_summary": "Increase gains.",
+                "thought_process": "Round 1 was too slow.",
+                "tuning_action": "ADJUST_PID",
+                "p": 15.0,
+                "i": 1.0,
+                "d": 5.0,
+                "status": "TUNING",
+            },
+        )
+
+        record = state.history.history[0]
+        self.assertEqual(record["pid"], {"p": 1.0, "i": 0.0, "d": 0.0})
+        self.assertEqual(record["metrics"]["avg_error"], 148.26)
+        self.assertEqual(state.buffer.current_pid["p"], 3.0)
+
+    def test_record_rollback_round_keeps_failed_pid_in_history(self):
+        state = create_tuning_session(
+            initial_pid={"p": 25.0, "i": 9.5, "d": 4.5},
+            setpoint=200.0,
+        )
+        evaluation = RoundEvaluation(
+            round_index=6,
+            metrics={"avg_error": 93.0, "steady_state_error": 8.0, "overshoot": 4.6, "status": "STABLE"},
+            current_pid={"p": 25.0, "i": 9.5, "d": 4.5},
+            stable_rounds=0,
+            best_result={"round": 5, "pid": {"p": 22.0, "i": 8.0, "d": 5.0}, "metrics": {"avg_error": 60.88}},
+            rollback_pid={"p": 22.0, "i": 8.0, "d": 5.0},
+        )
+
+        summary = record_rollback_round(
+            state,
+            evaluation,
+            {"p": 22.0, "i": 8.0, "d": 5.0},
+            target_round=5,
+        )
+
+        record = state.history.history[0]
+        self.assertEqual(record["pid"], {"p": 25.0, "i": 9.5, "d": 4.5})
+        self.assertEqual(record["metrics"]["avg_error"], 93.0)
+        self.assertIn("Automatic rollback triggered", record["analysis"])
+        self.assertIn("round 5", summary)
 
 
 class BufferTests(unittest.TestCase):
