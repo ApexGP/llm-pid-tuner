@@ -150,6 +150,83 @@ class SimulinkBridge:
     # 仿真步进与数据采集
     # ------------------------------------------------------------------
 
+    def _get_field_or_none(self, obj: object, field_name: str) -> Optional[object]:
+        """Best-effort MATLAB struct/object field access."""
+        try:
+            return self._eng.getfield(obj, field_name, nargout=1)  # type: ignore[union-attr]
+        except Exception:
+            return None
+
+    def _to_float_scalar(self, value: object) -> float:
+        """Convert MATLAB numeric wrappers (including nested iterables) to float."""
+        current = value
+        while isinstance(current, (list, tuple)):
+            if not current:
+                return 0.0
+            current = current[0]
+        try:
+            iterator = iter(current)  # type: ignore[arg-type]
+        except TypeError:
+            return float(current)  # type: ignore[arg-type]
+        converted = list(iterator)
+        if not converted:
+            return 0.0
+        return self._to_float_scalar(converted[0])
+
+    def _to_float_series(self, raw_values: object) -> list[float]:
+        if raw_values is None:
+            return []
+        if isinstance(raw_values, (str, bytes)):
+            return []
+        try:
+            values = list(raw_values)  # type: ignore[arg-type]
+        except TypeError:
+            return [self._to_float_scalar(raw_values)]
+        return [self._to_float_scalar(item) for item in values]
+
+    def _resolve_signal_container(self, sim_out: object) -> object:
+        """
+        Resolve signal output container from different MATLAB versions/configs.
+
+        Supported lookup order:
+        1. simOut.<output_signal>
+        2. simOut.out.<output_signal>  (common in some MATLAB/Simulink setups)
+        """
+        direct_signal = self._get_field_or_none(sim_out, self.output_signal)
+        if direct_signal is not None:
+            return direct_signal
+
+        out_container = self._get_field_or_none(sim_out, "out")
+        if out_container is not None:
+            nested_signal = self._get_field_or_none(out_container, self.output_signal)
+            if nested_signal is not None:
+                return nested_signal
+
+        raise RuntimeError(
+            f"[SimulinkBridge] 无法在仿真输出中找到信号 '{self.output_signal}'。"
+            f"已尝试 simOut.{self.output_signal} 和 simOut.out.{self.output_signal}。"
+        )
+
+    def _resolve_time_vector(self, sim_out: object) -> list[float]:
+        """Resolve simulation time vector for array-style workspace output."""
+        for candidate in ("tout", "time", "Time"):
+            raw_time = self._get_field_or_none(sim_out, candidate)
+            if raw_time is not None:
+                values = self._to_float_series(raw_time)
+                if values:
+                    return values
+
+        out_container = self._get_field_or_none(sim_out, "out")
+        if out_container is not None:
+            for candidate in ("tout", "time", "Time"):
+                raw_time = self._get_field_or_none(out_container, candidate)
+                if raw_time is not None:
+                    values = self._to_float_series(raw_time)
+                    if values:
+                        return values
+
+        return []
+
     def run_step(self) -> None:
         """
         将仿真推进 sim_step_time 秒，并将输出数据存入 _last_data。
@@ -166,13 +243,22 @@ class SimulinkBridge:
         self._eng.set_param(self._model_name, "StopTime", str(self.sim_step_time), nargout=0)
         sim_out = self._eng.sim(self._model_name, nargout=1)
 
-        # 从 sim() 返回的对象中读取 Timeseries 格式的输出信号
+        # 从 sim() 返回对象中读取输出信号（兼容不同 MATLAB 版本的层级差异）
         try:
-            ts = self._eng.getfield(sim_out, self.output_signal, nargout=1)
-            raw_time   = self._eng.getfield(ts, 'Time', nargout=1)
-            raw_output = self._eng.getfield(ts, 'Data', nargout=1)
-            time_values   = [float(list(v)[0]) if hasattr(v, '__iter__') else float(v) for v in raw_time]
-            output_values = [float(list(v)[0]) if hasattr(v, '__iter__') else float(v) for v in raw_output]
+            signal_container = self._resolve_signal_container(sim_out)
+
+            # Case A: Timeseries-like container with Time/Data fields.
+            raw_time = self._get_field_or_none(signal_container, "Time")
+            raw_output = self._get_field_or_none(signal_container, "Data")
+            if raw_time is not None and raw_output is not None:
+                time_values = self._to_float_series(raw_time)
+                output_values = self._to_float_series(raw_output)
+            else:
+                # Case B: Array-like container (e.g. out.y_out) with time from tout.
+                output_values = self._to_float_series(signal_container)
+                time_values = self._resolve_time_vector(sim_out)
+                if not time_values:
+                    time_values = [float(idx) for idx in range(len(output_values))]
         except Exception as e:
             raise RuntimeError(
                 f"[SimulinkBridge] 无法读取输出信号 '{self.output_signal}'：{e}。"
