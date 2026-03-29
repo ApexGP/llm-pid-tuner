@@ -111,10 +111,7 @@ def collect_doctor_checks() -> list[DoctorCheck]:
     else:
         endpoint, headers = _models_endpoint(provider, base_url)
         try:
-            try:
-                response = requests.get(endpoint, headers=headers, timeout=5)
-            except requests.Timeout:
-                response = requests.get(endpoint, headers=headers, timeout=8)
+            response = requests.get(endpoint, headers=headers, timeout=5)
 
             if response.status_code < 500:
                 status = "PASS" if response.ok else "WARN"
